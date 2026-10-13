@@ -158,6 +158,21 @@ pub struct Saved {
     pub added_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lyrics {
+    /// Whether lines carry the time they are sung at.
+    pub synced: bool,
+    pub lines: Vec<LyricLine>,
+    pub provider: Box<str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LyricLine {
+    /// When the line starts; 0 throughout for unsynced lyrics.
+    pub start_ms: u32,
+    pub text: Box<str>,
+}
+
 /// A titled row of the home feed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shelf {

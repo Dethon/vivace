@@ -1,9 +1,11 @@
 //! Developer tool exercising the engine against a real account.
 //!
-//!   cli library | home | playlist <id> | album <id> | artist <id> | search <query>
+//!   cli library | home | lyrics <track id> | save-test track|album|artist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
-//!   cli play <context uri> [seconds]     plays through the default output
-//!   cli play-silent <context uri> [seconds]     decodes without sound
+//!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
+//!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
+//!
+//! Put `silent` first to discard audio instead of playing it: `cli silent play <uri>`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,8 +18,8 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, Repeat, Start,
-    model::{Id, Track},
+    Config, Engine, Event, Events, RemoteCommand, Repeat, Start,
+    model::{Id, Kind, Track},
 };
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -27,14 +29,12 @@ async fn main() -> Fallible<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let config = match args.first() {
-        Some(&"play-silent") => Config {
-            sink: Some(Arc::new(|| Box::new(Silence::default()))),
-            ..Config::default()
-        },
-        _ => Config::default(),
-    };
+    let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut config = Config::default();
+    if args.first() == Some(&"silent") {
+        args.remove(0);
+        config.sink = Some(Arc::new(|| Box::new(Silence::default())));
+    }
 
     let started = Instant::now();
     let (engine, mut events) = Engine::connect(config).await?;
@@ -79,6 +79,51 @@ async fn main() -> Fallible<()> {
                     println!("  {item:?}");
                 }
             }
+        }
+        ["lyrics", id] => match api.lyrics(Id::from_base62(id)?).await? {
+            Some(lyrics) => {
+                println!(
+                    "synced={} provider={} lines={}",
+                    lyrics.synced,
+                    lyrics.provider,
+                    lyrics.lines.len()
+                );
+                for line in lyrics.lines.iter().take(6) {
+                    println!("  {:>6} {}", line.start_ms, line.text);
+                }
+            }
+            None => println!("no lyrics"),
+        },
+        ["save-test", kind @ ("track" | "album" | "artist"), id] => {
+            // Saves and removes an item that is not in the library, leaving it as it was.
+            let id = Id::from_base62(id)?;
+            let kind = *kind;
+            let present = || async {
+                Ok::<_, vivace_core::Error>(match kind {
+                    "track" => api.saved().await?.tracks.iter().any(|saved| saved.id == id),
+                    "album" => api.saved().await?.albums.iter().any(|saved| saved.id == id),
+                    _ => api
+                        .followed_artists()
+                        .await?
+                        .iter()
+                        .any(|saved| saved.id == id),
+                })
+            };
+            let api = &api;
+            let set = |saved| async move {
+                match kind {
+                    "track" => api.set_saved(Kind::Track, id, saved).await,
+                    "album" => api.set_saved(Kind::Album, id, saved).await,
+                    _ => api.set_followed(id, saved).await,
+                }
+            };
+            if present().await? {
+                return Err("that item is already in the library; pick another".into());
+            }
+            set(true).await?;
+            println!("after saving: in library = {}", present().await?);
+            set(false).await?;
+            println!("after removing: in library = {}", present().await?);
         }
         ["playlist", id] => {
             let details = api.playlist(Id::from_base62(id)?).await?;
@@ -147,7 +192,11 @@ async fn main() -> Fallible<()> {
             let seconds = rest.first().map_or(Ok(5), |seconds| seconds.parse())?;
             watch(&engine, &mut events, seconds, false).await?;
         }
-        ["play" | "play-silent", uri, rest @ ..] => {
+        ["remote", rest @ ..] => {
+            let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
+            remote(&engine, &mut events, seconds).await?;
+        }
+        ["play", uri, rest @ ..] => {
             let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
             engine.play_context(uri, Start::Beginning, false, Repeat::Off)?;
             watch(&engine, &mut events, seconds, true).await?;
@@ -186,6 +235,60 @@ impl Sink for Silence {
     }
 }
 
+/// Every few seconds acts on whatever another device is playing: pauses it,
+/// resumes it, and finally moves its playback to this computer.
+async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<()> {
+    let api = engine.api();
+    let deadline = tokio::time::sleep(Duration::from_secs(seconds));
+    tokio::pin!(deadline);
+    let mut steps = tokio::time::interval(Duration::from_secs(4));
+    steps.tick().await;
+    let mut step = 0;
+    let mut device: Option<Box<str>> = None;
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return Ok(()),
+            _ = steps.tick() => {
+                let Some(device) = &device else { continue };
+                step += 1;
+                match step {
+                    1 => {
+                        println!("-> pause the remote device");
+                        api.remote(device, RemoteCommand::Pause).await?;
+                    }
+                    2 => {
+                        println!("-> resume the remote device");
+                        api.remote(device, RemoteCommand::Resume).await?;
+                    }
+                    3 => {
+                        println!("-> take over playback");
+                        engine.transfer_here()?;
+                    }
+                    _ => {}
+                }
+            }
+            event = events.recv() => match event {
+                Some(Event::Connect(connect)) => match connect.remote {
+                    Some(remote) => {
+                        println!(
+                            "remote: playing={} position={} track={:?} on {}",
+                            remote.playing, remote.position_ms, remote.queue.current, remote.device
+                        );
+                        device = Some(remote.device);
+                    }
+                    None => {
+                        println!("connect: nothing plays elsewhere");
+                        device = None;
+                    }
+                },
+                Some(Event::Position(_) | Event::Queue(_)) => {}
+                Some(event) => println!("{event:?}"),
+                None => return Ok(()),
+            },
+        }
+    }
+}
+
 /// Prints events for `seconds`, optionally skipping to the next track once.
 async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -> Fallible<()> {
     let deadline = tokio::time::sleep(Duration::from_secs(seconds));
@@ -201,6 +304,20 @@ async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -
                     engine.add_to_queue(Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?)?;
                     engine.next()?;
                     engine.set_shuffle(true)?;
+                }
+                Some(Event::Connect(connect)) => {
+                    for device in &connect.devices {
+                        println!(
+                            "device: {} ({:?}){}{}",
+                            device.name,
+                            device.kind,
+                            if device.is_active { " [active]" } else { "" },
+                            if device.is_local { " [this computer]" } else { "" },
+                        );
+                    }
+                    if let Some(remote) = &connect.remote {
+                        println!("remote: {remote:?}");
+                    }
                 }
                 Some(Event::Queue(queue)) => println!(
                     "queue: context {} | current {:?} | {} next ({} queued by hand), first {:?}",

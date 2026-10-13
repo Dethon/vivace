@@ -96,6 +96,8 @@ struct SpircTask {
     context_resolver: ContextResolver,
 
     emit_set_queue_events: bool,
+    // vivace: see `ConnectConfig::cluster_listener`.
+    cluster_listener: Option<mpsc::UnboundedSender<Cluster>>,
 
     shutdown: bool,
     session: Session,
@@ -177,6 +179,7 @@ impl Spirc {
         debug!("new Spirc[{spirc_id}]");
 
         let emit_set_queue_events = config.emit_set_queue_events;
+        let cluster_listener = config.cluster_listener.clone();
         let connect_state = ConnectState::new(config, &session);
 
         let connection_id_update = session
@@ -254,6 +257,7 @@ impl Spirc {
             context_resolver: ContextResolver::new(session.clone()),
 
             emit_set_queue_events,
+            cluster_listener,
 
             shutdown: false,
             session,
@@ -924,6 +928,7 @@ impl SpircTask {
         );
 
         self.connect_established = true;
+        self.forward_cluster(cluster.clone());
 
         let same_session = cluster.player_state.session_id == self.session.session_id()
             || cluster.player_state.session_id.is_empty();
@@ -1428,6 +1433,12 @@ impl SpircTask {
             self.connect_state.set_shuffle(options.shuffle);
             self.connect_state.set_repeat_context(options.repeat);
             self.connect_state.set_repeat_track(options.repeat_track);
+
+            // vivace: listeners last heard the modes at activation, before
+            // this load replaced them.
+            self.player.emit_shuffle_changed_event(options.shuffle);
+            self.player
+                .emit_repeat_changed_event(options.repeat, options.repeat_track);
         }
 
         if matches!(cmd_options.context_options, Some(LoadContextOptions::Options(ref o)) if o.shuffle)
@@ -1923,10 +1934,18 @@ impl SpircTask {
 
         self.connect_state.set_now(self.now_ms() as u64);
 
-        self.connect_state
-            .send_state(&self.session)
-            .await
-            .map(|_| ())
+        let response = self.connect_state.send_state(&self.session).await?;
+        if let Ok(cluster) = <Cluster as protobuf::Message>::parse_from_bytes(&response) {
+            self.forward_cluster(cluster);
+        }
+        Ok(())
+    }
+
+    // vivace: hands the cluster to the listener, if there is one.
+    fn forward_cluster(&self, cluster: Cluster) {
+        if let Some(listener) = &self.cluster_listener {
+            let _ = listener.send(cluster);
+        }
     }
 
     fn set_volume(&mut self, volume: u16) {

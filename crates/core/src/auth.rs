@@ -39,7 +39,8 @@ const SCOPES: &[&str] = &[
 const LOGIN_DONE_PAGE: &str =
     "<!doctype html><html><body><h1>Signed in. You can close this tab.</h1></body></html>";
 
-fn data_dir() -> crate::Result<PathBuf> {
+/// The directory holding credentials, settings and the log.
+pub fn data_dir() -> crate::Result<PathBuf> {
     Ok(dirs::config_dir()
         .ok_or(crate::Error::NoConfigDir)?
         .join("vivace"))

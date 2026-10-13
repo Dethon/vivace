@@ -38,6 +38,23 @@ pub struct Header {
     pub round: bool,
     /// Shows the Liked Songs emblem instead of artwork.
     pub liked_songs: bool,
+    /// What the header's save or follow button acts on, if it has one.
+    pub save: Option<Saveable>,
+}
+
+/// Something that can be kept in the user's library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Saveable {
+    Track(Id),
+    Album(Id),
+    Artist(Id),
+}
+
+impl Saveable {
+    pub fn id(self) -> Id {
+        let (Saveable::Track(id) | Saveable::Album(id) | Saveable::Artist(id)) = self;
+        id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +174,7 @@ async fn liked(api: &Api, liked_uri: &str) -> Result<PageData> {
             image: None,
             round: false,
             liked_songs: true,
+            save: None,
         }),
         context: Some(liked_uri.into()),
         sections: vec![track_list(
@@ -201,6 +219,7 @@ async fn playlist(api: &Api, id: Id) -> Result<PageData> {
             image,
             round: false,
             liked_songs: false,
+            save: None,
         }),
         context: Some(Kind::Playlist.uri(id)),
         sections: vec![track_list(tracks, true, false, "This playlist is empty")],
@@ -233,6 +252,7 @@ async fn album(api: &Api, id: Id) -> Result<PageData> {
             image: album.cover,
             round: false,
             liked_songs: false,
+            save: Some(Saveable::Album(id)),
         }),
         context: Some(Kind::Album.uri(id)),
         sections: vec![track_list(
@@ -294,6 +314,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
             image: details.artist.image,
             round: true,
             liked_songs: false,
+            save: Some(Saveable::Artist(id)),
         }),
         context: Some(Kind::Artist.uri(id)),
         sections,

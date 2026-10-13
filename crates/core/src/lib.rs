@@ -2,14 +2,17 @@
 
 mod api;
 mod auth;
+mod connect;
 mod engine;
 pub mod model;
 
 use std::time::Duration;
 
-pub use api::{Api, SavedItems};
+pub use api::{Api, RemoteCommand, SavedItems};
+pub use auth::data_dir;
+pub use connect::{Connect, Device, DeviceKind, Remote};
 pub use engine::{
-    Config, Device, Engine, Event, Events, Playback, Queue, QueueItem, Repeat, SinkFactory, Start,
+    Config, Engine, Event, Events, Playback, Queue, QueueItem, Repeat, SinkFactory, Start,
 };
 
 #[derive(Debug, thiserror::Error)]

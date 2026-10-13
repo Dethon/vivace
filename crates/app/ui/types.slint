@@ -24,6 +24,8 @@ export struct CardData {
     liked-songs: bool,
 }
 
+export enum SaveKind { none, album, artist }
+
 export struct HeaderData {
     kind: string,
     title: string,
@@ -32,6 +34,9 @@ export struct HeaderData {
     round: bool,
     liked-songs: bool,
     playable: bool,
+    // Which save control the header offers, and whether it is on.
+    save: SaveKind,
+    saved: bool,
 }
 
 // A page is one virtualised list of rows of these kinds.
@@ -58,6 +63,16 @@ export struct LibraryItem {
 }
 
 export enum RepeatMode { off, all, one }
+
+export enum DeviceIcon { computer, phone, speaker, tv, other }
+
+export struct DeviceItem {
+    name: string,
+    kind: DeviceIcon,
+    active: bool,
+    // This computer.
+    local: bool,
+}
 
 export enum TrackAction { toggle-liked, add-to-queue, open-album, open-artist }
 
@@ -108,6 +123,8 @@ export global Nav {
     callback search(string);
     // The header's play button.
     callback play-page();
+    // The header's save or follow control.
+    callback toggle-saved();
     // Row index within `rows`.
     callback play-track(int);
     callback track-action(int, TrackAction);
@@ -129,6 +146,27 @@ export global Queue {
     in property <int> queued;
     // Name of the playlist or album the rest of the queue comes from.
     in property <string> context;
+}
+
+export global LyricsView {
+    in-out property <bool> visible;
+    in property <[string]> lines;
+    // Index of the line being sung; -1 when unknown or the lyrics are unsynced.
+    in property <int> current: -1;
+    in property <bool> synced;
+    // Shown in place of the lines: loading, or that there are none.
+    in property <string> status;
+    // The panel was opened.
+    callback shown();
+    // Jump to the line with this index.
+    callback seek(int);
+}
+
+export global Devices {
+    in property <[DeviceItem]> items;
+    // Name of the other device that is playing; empty when none is.
+    in property <string> remote-name;
+    callback transfer(int);
 }
 
 export global Session {

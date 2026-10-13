@@ -6,9 +6,10 @@ license.workspace = true
 
 [dependencies]
 vivace-core = { path = "../core" }
-env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # Software renderer only: GPU renderers cost 80-240 MB of driver memory.
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

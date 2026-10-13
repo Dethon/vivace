@@ -16,11 +16,11 @@ use librespot_playback::{
     mixer::{self, Mixer, MixerConfig},
     player::{Player, PlayerEvent, PlayerEventChannel},
 };
-use librespot_protocol::connect::ClusterUpdate;
-use tokio::sync::{oneshot, watch};
+use librespot_protocol::connect::{Cluster, ClusterUpdate};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
-    Api, Result, auth,
+    Api, Connect, Result, auth,
     model::{Id, Kind},
 };
 
@@ -28,7 +28,7 @@ const CLUSTER_UPDATES: &str = "hm://connect-state/v1/cluster";
 const DEFAULT_VOLUME: u16 = u16::MAX / 2;
 const VOLUME_SETTLE: Duration = Duration::from_millis(300);
 // Provider Spotify assigns to tracks the user queued by hand.
-const QUEUE_PROVIDER: &str = "queue";
+pub(crate) const QUEUE_PROVIDER: &str = "queue";
 
 type ClusterUpdates = futures_util::stream::BoxStream<
     'static,
@@ -76,15 +76,6 @@ pub struct Playback {
     pub position_ms: u32,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Device {
-    pub id: Box<str>,
-    pub name: Box<str>,
-    pub is_active: bool,
-    /// Whether this is the device the engine itself plays on.
-    pub is_local: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QueueItem {
     pub track: Id,
@@ -114,8 +105,8 @@ pub enum Event {
     Shuffle(bool),
     Repeat(Repeat),
     Queue(Queue),
-    /// The account's Connect devices changed.
-    Devices(Vec<Device>),
+    /// The account's devices, or playback on another one, changed.
+    Connect(Connect),
     /// The session ended; a new [`Engine`] is needed to continue.
     Disconnected,
 }
@@ -188,11 +179,13 @@ impl Engine {
             .dealer()
             .listen_for(CLUSTER_UPDATES, Message::from_raw::<ClusterUpdate>)?;
 
+        let (own_clusters_tx, own_clusters) = mpsc::unbounded_channel();
         let connect_config = ConnectConfig {
             name: device_name.into(),
             device_type: DeviceType::Computer,
             initial_volume,
             emit_set_queue_events: true,
+            cluster_listener: Some(own_clusters_tx),
             ..ConnectConfig::default()
         };
         // Spirc connects the session itself and stores reusable credentials.
@@ -216,6 +209,7 @@ impl Engine {
         let events = Events {
             player: player.get_player_event_channel(),
             cluster,
+            own_clusters,
             closed: Some(closed),
             queue: None,
             device_id: session.device_id().into(),
@@ -303,6 +297,11 @@ impl Engine {
         Ok(self.spirc.clear_queue()?)
     }
 
+    /// Moves playback from whichever device has it to this computer.
+    pub fn transfer_here(&self) -> Result<()> {
+        Ok(self.spirc.transfer(None)?)
+    }
+
     pub fn play(&self) -> Result<()> {
         Ok(self.spirc.play()?)
     }
@@ -370,7 +369,9 @@ impl Drop for Engine {
 
 pub struct Events {
     player: PlayerEventChannel,
+    // Cluster changes caused by other devices, and those answering our own.
     cluster: ClusterUpdates,
+    own_clusters: mpsc::UnboundedReceiver<Cluster>,
     closed: Option<oneshot::Receiver<()>>,
     queue: Option<Queue>,
     device_id: Box<str>,
@@ -400,11 +401,18 @@ impl Events {
                 },
                 Some(update) = self.cluster.next() => {
                     if let Ok(update) = update {
-                        return Some(Event::Devices(devices(&update, &self.device_id)));
+                        return Some(self.connect(&update.cluster));
                     }
                 }
+                Some(cluster) = self.own_clusters.recv() => return Some(self.connect(&cluster)),
             }
         }
+    }
+}
+
+impl Events {
+    fn connect(&self, cluster: &Cluster) -> Event {
+        Event::Connect(Connect::from_cluster(cluster, &self.device_id))
     }
 }
 
@@ -455,26 +463,6 @@ fn player_event(event: PlayerEvent) -> Option<Event> {
         }),
         _ => return None,
     })
-}
-
-fn devices(update: &ClusterUpdate, local_device: &str) -> Vec<Device> {
-    let cluster = &update.cluster;
-    let mut devices: Vec<Device> = cluster
-        .device
-        .iter()
-        .map(|(id, info)| Device {
-            id: id.as_str().into(),
-            name: info.name.as_str().into(),
-            is_active: *id == cluster.active_device_id,
-            is_local: id == local_device,
-        })
-        .collect();
-    devices.sort_by(|a, b| {
-        b.is_local
-            .cmp(&a.is_local)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    devices
 }
 
 fn rejects_credentials(error: &librespot_core::Error) -> bool {

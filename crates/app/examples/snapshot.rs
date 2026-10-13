@@ -1,18 +1,21 @@
 //! Renders the window with sample data to a PNG, without a display.
 //!
 //!   cargo run -p vivace --example snapshot -- out.png [width height]
+//!
+//! `SNAPSHOT_QUEUE=1` opens the queue panel; `SNAPSHOT_CLICK=x,y` clicks at
+//! that point first, e.g. to open a popup.
 
 use std::rc::Rc;
 
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, WindowAdapter};
+use slint::platform::{Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{
-    ComponentHandle, Image, ModelRc, PhysicalSize, PlatformError, Rgba8Pixel, SharedPixelBuffer,
-    VecModel,
+    ComponentHandle, Image, LogicalPosition, ModelRc, PhysicalSize, PlatformError, Rgba8Pixel,
+    SharedPixelBuffer, VecModel,
 };
 use vivace::{
-    CardData, HeaderData, Library, LibraryItem, MainWindow, Nav, Player, Queue, RepeatMode, Row,
-    RowKind, Session, TrackData,
+    CardData, DeviceIcon, DeviceItem, Devices, HeaderData, Library, LibraryItem, MainWindow, Nav,
+    Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, TrackData,
 };
 
 struct Headless(Rc<MinimalSoftwareWindow>);
@@ -125,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 round: false,
                 liked_songs: false,
                 playable: true,
+                save: SaveKind::Album,
+                saved: true,
             },
             ..Row::default()
         },
@@ -185,8 +190,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     queue.set_queued(2);
     queue.set_context("Late Night Drive".into());
 
+    let devices: Vec<DeviceItem> = [
+        ("Vivace", DeviceIcon::Computer, false, true),
+        ("Cocina", DeviceIcon::Speaker, true, false),
+        ("Pixel 9", DeviceIcon::Phone, false, false),
+        ("Salón", DeviceIcon::Tv, false, false),
+    ]
+    .into_iter()
+    .map(|(name, kind, active, local)| DeviceItem {
+        name: name.into(),
+        kind,
+        active,
+        local,
+    })
+    .collect();
+    ui.global::<Devices>()
+        .set_items(ModelRc::new(VecModel::from(devices)));
+    ui.global::<Devices>().set_remote_name("Cocina".into());
+
     ui.show()?;
     slint::platform::update_timers_and_animations();
+    if let Some((x, y)) = std::env::var("SNAPSHOT_CLICK")
+        .ok()
+        .as_deref()
+        .and_then(|point| point.split_once(','))
+    {
+        let position = LogicalPosition::new(x.trim().parse()?, y.trim().parse()?);
+        let button = PointerEventButton::Left;
+        for event in [
+            WindowEvent::PointerMoved { position },
+            WindowEvent::PointerPressed { position, button },
+            WindowEvent::PointerReleased { position, button },
+        ] {
+            ui.window().dispatch_event(event);
+        }
+        slint::platform::update_timers_and_animations();
+    }
     let snapshot = ui.window().take_snapshot()?;
     image::save_buffer(
         &path,

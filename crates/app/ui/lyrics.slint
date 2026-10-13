@@ -1,0 +1,84 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons, IconButton } from "theme.slint";
+import { LyricsView } from "types.slint";
+
+export component LyricsPanel inherits Rectangle {
+    // Rows have one height so the current line can be centred exactly.
+    property <length> line-height: 52px;
+    property <int> current: LyricsView.current;
+
+    background: Theme.surface;
+    border-radius: 8px;
+
+    changed current => {
+        if self.current >= 0 {
+            list.content-y = -clamp(self.current * self.line-height - list.visible-height / 2 + self.line-height / 2, 0px, max(0px, LyricsView.lines.length * self.line-height - list.visible-height));
+        }
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 8px;
+
+            Text {
+                text: "Lyrics";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    icon: Icons.close;
+                    icon-size: 18px;
+                    clicked => {
+                        LyricsView.visible = false;
+                    }
+                }
+            }
+        }
+
+        if LyricsView.lines.length == 0: Text {
+            text: LyricsView.status;
+            color: Theme.text-muted;
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+
+        list := ListView {
+            visible: LyricsView.lines.length > 0;
+
+            for line[index] in LyricsView.lines: Rectangle {
+                height: root.line-height;
+
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    text: line;
+                    color: index == LyricsView.current ? Theme.text : touch.has-hover ? Theme.text-muted : LyricsView.current < 0 ? Theme.text-muted : Theme.text-faint;
+                    font-size: 17px;
+                    font-weight: index == LyricsView.current ? 700 : 600;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
+
+                touch := TouchArea {
+                    mouse-cursor: LyricsView.synced ? pointer : default;
+                    clicked => {
+                        LyricsView.seek(index);
+                    }
+                }
+            }
+        }
+    }
+}

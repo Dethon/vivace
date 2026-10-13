@@ -1,22 +1,23 @@
 //! The controller: owns what is on screen and reacts to the user and the backend.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Config, Playback, Repeat, Start,
-    model::{Id, Image, Playlist, Track},
+    Config, Connect, Device, DeviceKind, Playback, Repeat, Start,
+    model::{Id, Image, Lyrics, Playlist, Track},
 };
 
 use crate::{
-    CardData, HeaderData, Library, LibraryItem, MainWindow, Nav, Player, Queue, RepeatMode, Row,
-    RowKind, Session, TrackAction, TrackData,
+    CardData, DeviceIcon, DeviceItem, Devices, HeaderData, Library, LibraryItem, LyricsView,
+    MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, TrackAction,
+    TrackData,
     backend::{self, Request, ResolvedQueue, Update},
-    content::{Card, Page, PageData, Section},
+    content::{Card, Page, PageData, Saveable, Section},
     format,
     images::{Images, Shape},
     media::{Attach, MediaCommand, MediaKeys},
@@ -27,6 +28,8 @@ const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const NOTICE_DURATION: Duration = Duration::from_secs(4);
 const MEDIA_ATTACH_INTERVAL: Duration = Duration::from_millis(250);
 const MEDIA_ATTACH_ATTEMPTS: u32 = 20;
+const REMOTE_TICK: Duration = Duration::from_secs(1);
+const REMOTE_VOLUME_DELAY: Duration = Duration::from_millis(300);
 // Pages kept for instant back and forward navigation.
 const CACHED_PAGES: usize = 12;
 // Logical edge lengths of artwork, matching the components in `ui/`.
@@ -51,6 +54,15 @@ pub struct App {
     playlist_covers: RefCell<HashMap<Id, Option<Image>>>,
     search_timer: Timer,
     media_timer: Timer,
+    /// Advances the position shown for another device's playback.
+    remote_timer: Timer,
+    /// Holds back volume changes for another device until the slider rests.
+    volume_timer: Timer,
+    /// Fires when the next lyric line is due.
+    lyrics_timer: Timer,
+    /// When the position on screen was last set.
+    position_shown: Cell<Instant>,
+    this: Weak<Self>,
     notice_timer: Timer,
 }
 
@@ -68,6 +80,8 @@ struct State {
 
     playlists: Vec<Playlist>,
     liked: HashSet<Id>,
+    /// Saved albums and followed artists.
+    saved: HashSet<Id>,
 
     now_playing: Option<Track>,
     playing: bool,
@@ -77,6 +91,22 @@ struct State {
     queue_sequence: u64,
     /// URI and name of the context the user last started, to label the queue.
     started: Option<(String, String)>,
+
+    /// Lyrics of the playing track once requested; the inner `None` covers
+    /// both "still loading" and "has none".
+    lyrics: Option<(Id, Option<Lyrics>)>,
+    devices: Vec<Device>,
+    /// Id of the other device that is playing, if one is.
+    remote: Option<Box<str>>,
+}
+
+impl State {
+    fn is_saved(&self, item: Saveable) -> bool {
+        match item {
+            Saveable::Track(id) => self.liked.contains(&id),
+            Saveable::Album(id) | Saveable::Artist(id) => self.saved.contains(&id),
+        }
+    }
 }
 
 struct Visit {
@@ -137,6 +167,7 @@ impl App {
                 ever_connected: false,
                 playlists: Vec::new(),
                 liked: HashSet::new(),
+                saved: HashSet::new(),
                 now_playing: None,
                 playing: false,
                 shuffle: false,
@@ -144,10 +175,18 @@ impl App {
                 queue: Vec::new(),
                 queue_sequence: 0,
                 started: None,
+                lyrics: None,
+                devices: Vec::new(),
+                remote: None,
             }),
             playlist_covers: RefCell::default(),
             search_timer: Timer::default(),
             media_timer: Timer::default(),
+            remote_timer: Timer::default(),
+            volume_timer: Timer::default(),
+            lyrics_timer: Timer::default(),
+            position_shown: Cell::new(Instant::now()),
+            this: app.clone(),
             notice_timer: Timer::default(),
         });
 
@@ -195,6 +234,7 @@ impl App {
         nav.on_forward(self.handler(|app| app.step(1)));
         nav.on_open_home(self.handler(|app| app.open(Page::Home)));
         nav.on_play_page(self.handler(Self::play_page));
+        nav.on_toggle_saved(self.handler(Self::toggle_page_saved));
         nav.on_search({
             let app = Rc::downgrade(self);
             move |_| {
@@ -239,6 +279,29 @@ impl App {
             move |columns| {
                 if let Some(app) = app.upgrade() {
                     app.set_columns(columns.max(1) as usize);
+                }
+            }
+        });
+
+        let lyrics = ui.global::<LyricsView>();
+        lyrics.on_shown(self.handler(|app| {
+            app.load_lyrics();
+            app.follow_lyrics();
+        }));
+        lyrics.on_seek({
+            let app = Rc::downgrade(self);
+            move |index| {
+                if let Some(app) = app.upgrade() {
+                    app.seek_to_lyric(index.max(0) as usize);
+                }
+            }
+        });
+
+        ui.global::<Devices>().on_transfer({
+            let app = Rc::downgrade(self);
+            move |index| {
+                if let Some(app) = app.upgrade() {
+                    app.transfer(index as usize);
                 }
             }
         });
@@ -315,9 +378,9 @@ impl App {
             let app = Rc::downgrade(self);
             move |position_ms| {
                 if let Some(app) = app.upgrade() {
-                    let position_ms = position_ms.max(0);
-                    app.with_ui(|ui| ui.global::<Player>().set_position_ms(position_ms));
-                    app.request(Request::Seek(position_ms as u32));
+                    let position_ms = position_ms.max(0) as u32;
+                    app.show_position(position_ms);
+                    app.request(Request::Seek(position_ms));
                 }
             }
         });
@@ -326,7 +389,7 @@ impl App {
             move |volume| {
                 if let Some(app) = app.upgrade() {
                     app.with_ui(|ui| ui.global::<Player>().set_volume(volume));
-                    app.request(Request::Volume(volume));
+                    app.send_volume(volume);
                 }
             }
         });
@@ -393,11 +456,16 @@ impl App {
                     self.with_ui(|ui| ui.global::<Session>().set_status(message.into()));
                 }
             }
-            Update::Library { playlists, liked } => {
+            Update::Library {
+                playlists,
+                liked,
+                saved,
+            } => {
                 let len = {
                     let mut state = self.state.borrow_mut();
                     state.playlists = playlists;
                     state.liked = liked.into_iter().collect();
+                    state.saved = saved.into_iter().collect();
                     state.playlists.len() + 1
                 };
                 self.library.reset(len);
@@ -417,27 +485,27 @@ impl App {
                 self.refresh_cards();
             }
             Update::NowPlaying(track) => self.now_playing(track),
+            // While another device plays, its state is what the player shows.
+            Update::Playback(_) | Update::Position(_) | Update::Stopped | Update::Volume(_)
+                if self.state.borrow().remote.is_some() => {}
             Update::Playback(Playback {
                 playing,
                 position_ms,
             }) => {
                 self.state.borrow_mut().playing = playing;
-                self.with_ui(|ui| {
-                    let player = ui.global::<Player>();
-                    player.set_playing(playing);
-                    player.set_position_ms(position_ms as i32);
-                });
+                self.with_ui(|ui| ui.global::<Player>().set_playing(playing));
+                self.show_position(position_ms);
                 if let Some(media) = self.media.borrow_mut().as_mut() {
                     media.set_playback(playing, position_ms);
                 }
             }
             Update::Media(command) => self.media_command(command),
-            Update::Position(position_ms) => {
-                self.with_ui(|ui| ui.global::<Player>().set_position_ms(position_ms as i32));
-            }
+            Update::Position(position_ms) => self.show_position(position_ms),
+            Update::Lyrics { track, lyrics } => self.lyrics_loaded(track, lyrics),
             Update::Stopped => {
                 self.state.borrow_mut().playing = false;
                 self.with_ui(|ui| ui.global::<Player>().set_playing(false));
+                self.follow_lyrics();
             }
             Update::Volume(volume) => {
                 self.with_ui(|ui| ui.global::<Player>().set_volume(volume));
@@ -445,12 +513,119 @@ impl App {
             Update::Shuffle(shuffle) => self.set_shuffle(shuffle),
             Update::Repeat(repeat) => self.set_repeat(repeat),
             Update::Queue(queue) => self.queue_changed(queue),
-            Update::LikeFailed { track, liked } => {
-                self.set_liked(track, !liked);
-                self.notice("Couldn't update Liked Songs");
+            Update::Connect(connect) => self.connect_changed(connect),
+            Update::SaveFailed { item, saved } => {
+                self.set_saved(item, !saved);
+                self.notice("Couldn't update your library");
             }
             Update::Notice(message) => self.notice(&message),
         }
+    }
+
+    fn connect_changed(&self, connect: Connect) {
+        let was_remote = self.state.borrow().remote.is_some();
+        let local_active = connect
+            .devices
+            .iter()
+            .any(|device| device.is_local && device.is_active);
+        let items: Vec<DeviceItem> = connect
+            .devices
+            .iter()
+            .map(|device| DeviceItem {
+                name: device.name.as_ref().into(),
+                kind: match device.kind {
+                    DeviceKind::Computer => DeviceIcon::Computer,
+                    DeviceKind::Phone => DeviceIcon::Phone,
+                    DeviceKind::Speaker => DeviceIcon::Speaker,
+                    DeviceKind::Tv => DeviceIcon::Tv,
+                    DeviceKind::Other => DeviceIcon::Other,
+                },
+                active: device.is_active,
+                local: device.is_local,
+            })
+            .collect();
+        let remote_name = connect.remote.as_ref().and_then(|remote| {
+            let device = connect
+                .devices
+                .iter()
+                .find(|device| device.id == remote.device)?;
+            Some(device.name.clone())
+        });
+        {
+            let mut state = self.state.borrow_mut();
+            state.remote = connect.remote.as_ref().map(|remote| remote.device.clone());
+            state.devices = connect.devices;
+            match &connect.remote {
+                Some(remote) => state.playing = remote.playing,
+                // Nothing plays anywhere; a local start will say otherwise.
+                None if was_remote && !local_active => state.playing = false,
+                None => {}
+            }
+        }
+
+        let playing = self.state.borrow().playing;
+        self.with_ui(|ui| {
+            let devices = ui.global::<Devices>();
+            devices.set_items(ModelRc::from(items.as_slice()));
+            devices.set_remote_name(remote_name.as_deref().unwrap_or_default().into());
+
+            let player = ui.global::<Player>();
+            player.set_playing(playing);
+            if let Some(remote) = &connect.remote {
+                player.set_duration_ms(remote.duration_ms as i32);
+                player.set_volume(remote.volume);
+            }
+        });
+        if let Some(remote) = &connect.remote {
+            self.show_position(remote.position_ms);
+            self.set_shuffle(remote.shuffle);
+            self.set_repeat(remote.repeat);
+            if let Some(media) = self.media.borrow_mut().as_mut() {
+                media.set_playback(remote.playing, remote.position_ms);
+            }
+        }
+
+        // The device reports its position only when something changes, so
+        // the seconds in between are counted here.
+        if connect.remote.as_ref().is_some_and(|remote| remote.playing) {
+            let app = self.this.clone();
+            self.remote_timer
+                .start(TimerMode::Repeated, REMOTE_TICK, move || {
+                    let Some(app) = app.upgrade() else { return };
+                    let Some(ui) = app.ui.upgrade() else { return };
+                    let player = ui.global::<Player>();
+                    let position = player.get_position_ms() + REMOTE_TICK.as_millis() as i32;
+                    app.show_position(position.clamp(0, player.get_duration_ms()) as u32);
+                });
+        } else {
+            self.remote_timer.stop();
+        }
+    }
+
+    fn transfer(&self, index: usize) {
+        let request = {
+            let state = self.state.borrow();
+            match state.devices.get(index) {
+                Some(device) if !device.is_active => Request::Transfer {
+                    device: device.id.clone(),
+                    local: device.is_local,
+                },
+                _ => return,
+            }
+        };
+        self.request(request);
+    }
+
+    /// Applies a volume change: at once here, once the slider rests elsewhere.
+    fn send_volume(&self, volume: f32) {
+        if self.state.borrow().remote.is_none() {
+            return self.request(Request::Volume(volume));
+        }
+        let requests = self.requests.clone();
+        self.volume_timer
+            .start(TimerMode::SingleShot, REMOTE_VOLUME_DELAY, move || {
+                _ = requests.send(Request::Volume(volume));
+            });
     }
 
     fn notice(&self, message: &str) {
@@ -468,7 +643,7 @@ impl App {
         let playing = self.state.borrow().playing;
         let seek = |position_ms: i64| {
             let position_ms = position_ms.clamp(0, i64::from(i32::MAX)) as u32;
-            self.with_ui(|ui| ui.global::<Player>().set_position_ms(position_ms as i32));
+            self.show_position(position_ms);
             Request::Seek(position_ms)
         };
         self.request(match command {
@@ -508,11 +683,11 @@ impl App {
     }
 
     fn now_playing(&self, track: Track) {
-        let previous = {
+        let (previous, remote) = {
             let mut state = self.state.borrow_mut();
             let previous = state.now_playing.as_ref().map(|track| track.id);
             state.now_playing = Some(track.clone());
-            previous
+            (previous, state.remote.is_some())
         };
         self.with_ui(|ui| {
             let player = ui.global::<Player>();
@@ -520,18 +695,140 @@ impl App {
             player.set_title(track.name.as_ref().into());
             player.set_artists(artist_names(&track).into());
             player.set_duration_ms(track.duration_ms as i32);
-            player.set_position_ms(0);
             player.set_cover(
                 self.images
                     .get(track.cover.as_ref(), self.shape(PLAYER_COVER, false)),
             );
         });
+        // A local track starts from the top; another device says where it is.
+        if !remote {
+            self.show_position(0);
+        }
         if let Some(media) = self.media.borrow_mut().as_mut() {
             media.set_track(&track, &artist_names(&track));
         }
+        self.load_lyrics();
         self.show_player_liked();
         for id in previous.into_iter().chain([track.id]) {
             self.refresh_track(id);
+        }
+    }
+
+    /// Shows a playback position and keeps the lyrics in step with it.
+    fn show_position(&self, position_ms: u32) {
+        self.with_ui(|ui| ui.global::<Player>().set_position_ms(position_ms as i32));
+        self.position_shown.set(Instant::now());
+        self.follow_lyrics();
+    }
+
+    /// Fetches the playing track's lyrics if the panel is open and lacks them.
+    fn load_lyrics(&self) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let view = ui.global::<LyricsView>();
+        let track = {
+            let mut state = self.state.borrow_mut();
+            let Some(track) = state.now_playing.as_ref().map(|track| track.id) else {
+                view.set_status("Play something to see its lyrics".into());
+                return;
+            };
+            if !view.get_visible()
+                || state
+                    .lyrics
+                    .as_ref()
+                    .is_some_and(|(loaded, _)| *loaded == track)
+            {
+                return;
+            }
+            // Marks the request as made; the answer fills in the lines.
+            state.lyrics = Some((track, None));
+            track
+        };
+        view.set_lines(ModelRc::default());
+        view.set_current(-1);
+        view.set_status("Loading lyrics…".into());
+        self.request(Request::Lyrics(track));
+    }
+
+    fn lyrics_loaded(&self, track: Id, lyrics: Option<Lyrics>) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.now_playing.as_ref().map(|playing| playing.id) != Some(track) {
+                return;
+            }
+            state.lyrics = Some((track, lyrics.clone()));
+        }
+        self.with_ui(|ui| {
+            let view = ui.global::<LyricsView>();
+            match &lyrics {
+                Some(lyrics) => {
+                    let lines: Vec<SharedString> = lyrics
+                        .lines
+                        .iter()
+                        .map(|line| line.text.as_ref().into())
+                        .collect();
+                    view.set_lines(ModelRc::from(lines.as_slice()));
+                    view.set_synced(lyrics.synced);
+                }
+                None => view.set_status("No lyrics for this song".into()),
+            }
+        });
+        self.follow_lyrics();
+    }
+
+    /// Highlights the line being sung and wakes up again for the next one.
+    fn follow_lyrics(&self) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let view = ui.global::<LyricsView>();
+        self.lyrics_timer.stop();
+        if !view.get_visible() {
+            return;
+        }
+
+        let state = self.state.borrow();
+        let Some((_, Some(lyrics))) = &state.lyrics else {
+            return;
+        };
+        if !lyrics.synced {
+            return view.set_current(-1);
+        }
+        // The position on screen moves once a second; add what has passed since.
+        let shown = ui.global::<Player>().get_position_ms().max(0) as u32;
+        let elapsed = if state.playing {
+            self.position_shown.get().elapsed().as_millis() as u32
+        } else {
+            0
+        };
+        let position = shown.saturating_add(elapsed);
+
+        let upcoming = lyrics
+            .lines
+            .partition_point(|line| line.start_ms <= position);
+        view.set_current(upcoming as i32 - 1);
+        if let (true, Some(next)) = (state.playing, lyrics.lines.get(upcoming)) {
+            let wait = Duration::from_millis(u64::from(next.start_ms - position));
+            let app = self.this.clone();
+            self.lyrics_timer
+                .start(TimerMode::SingleShot, wait, move || {
+                    if let Some(app) = app.upgrade() {
+                        app.follow_lyrics();
+                    }
+                });
+        }
+    }
+
+    fn seek_to_lyric(&self, index: usize) {
+        let position_ms = {
+            let state = self.state.borrow();
+            match &state.lyrics {
+                Some((_, Some(lyrics))) if lyrics.synced => {
+                    lyrics.lines.get(index).map(|line| line.start_ms)
+                }
+                _ => None,
+            }
+        };
+        if let Some(position_ms) = position_ms {
+            self.show_position(position_ms);
+            self.request(Request::Seek(position_ms));
         }
     }
 
@@ -910,10 +1207,7 @@ impl App {
         };
         match action {
             TrackAction::ToggleLiked => self.toggle_liked(track.id),
-            TrackAction::AddToQueue => {
-                self.request(Request::AddToQueue(track.id));
-                self.notice("Added to queue");
-            }
+            TrackAction::AddToQueue => self.request(Request::AddToQueue(track.id)),
             TrackAction::OpenAlbum => self.open(Page::Album(track.album.id)),
             TrackAction::OpenArtist => {
                 if let Some(artist) = track.artists.first() {
@@ -924,22 +1218,51 @@ impl App {
     }
 
     fn toggle_liked(&self, track: Id) {
-        let liked = !self.state.borrow().liked.contains(&track);
-        self.set_liked(track, liked);
-        self.request(Request::SetLiked { track, liked });
+        self.toggle_saved(Saveable::Track(track));
     }
 
-    fn set_liked(&self, track: Id, liked: bool) {
+    /// Saves or removes the album or artist the page is about.
+    fn toggle_page_saved(&self) {
+        let item = {
+            let state = self.state.borrow();
+            state
+                .page
+                .as_ref()
+                .and_then(|page| page.header.as_ref()?.save)
+        };
+        if let Some(item) = item {
+            self.toggle_saved(item);
+        }
+    }
+
+    fn toggle_saved(&self, item: Saveable) {
+        let saved = !self.state.borrow().is_saved(item);
+        self.set_saved(item, saved);
+        self.request(Request::SetSaved { item, saved });
+    }
+
+    /// Shows an item as saved or not, ahead of Spotify confirming it.
+    fn set_saved(&self, item: Saveable, saved: bool) {
         {
             let mut state = self.state.borrow_mut();
-            if liked {
-                state.liked.insert(track);
+            let set = match item {
+                Saveable::Track(_) => &mut state.liked,
+                Saveable::Album(_) | Saveable::Artist(_) => &mut state.saved,
+            };
+            if saved {
+                set.insert(item.id());
             } else {
-                state.liked.remove(&track);
+                set.remove(&item.id());
             }
         }
-        self.refresh_track(track);
-        self.show_player_liked();
+        match item {
+            Saveable::Track(track) => {
+                self.refresh_track(track);
+                self.show_player_liked();
+            }
+            // The header is the page's first row.
+            Saveable::Album(_) | Saveable::Artist(_) => self.rows.refresh(0),
+        }
     }
 
     fn show_player_liked(&self) {
@@ -1007,6 +1330,12 @@ impl App {
                         round: header.round,
                         liked_songs: header.liked_songs,
                         playable: page.context.is_some(),
+                        save: match header.save {
+                            Some(Saveable::Album(_)) => SaveKind::Album,
+                            Some(Saveable::Artist(_)) => SaveKind::Artist,
+                            Some(Saveable::Track(_)) | None => SaveKind::None,
+                        },
+                        saved: header.save.is_some_and(|item| state.is_saved(item)),
                     },
                     ..Row::default()
                 }

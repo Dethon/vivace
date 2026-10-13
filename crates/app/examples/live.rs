@@ -23,7 +23,7 @@ use slint::platform::software_renderer::{
 };
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, EventLoopError, Model, PhysicalSize, PlatformError};
-use vivace::{App, Config, Library, MainWindow, Nav, Player, Queue, RowKind};
+use vivace::{App, Config, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
@@ -206,6 +206,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "9-liked",
             3000,
             Box::new(|ui| ui.global::<Library>().invoke_open(0)),
+        ),
+        (
+            "10-lyrics-search",
+            4000,
+            Box::new(|ui| {
+                ui.global::<Nav>()
+                    .set_query("never gonna give you up".into());
+                ui.global::<Nav>()
+                    .invoke_search("never gonna give you up".into());
+            }),
+        ),
+        (
+            "11-lyrics-loading",
+            3000,
+            Box::new(move |ui| {
+                ui.global::<Nav>()
+                    .invoke_play_track(first_row(ui, RowKind::Track));
+                ui.global::<LyricsView>().set_visible(true);
+                ui.global::<LyricsView>().invoke_shown();
+            }),
+        ),
+        (
+            "12-lyrics",
+            4000,
+            Box::new(|ui| ui.global::<Player>().invoke_seek(44_000)),
+        ),
+        (
+            "13-stopped",
+            1000,
+            Box::new(|ui| ui.global::<Player>().invoke_toggle()),
         ),
     ];
 

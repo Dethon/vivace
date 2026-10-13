@@ -1,12 +1,13 @@
 import { Theme } from "theme.slint";
-import { Player, Nav, Library, Queue, Session } from "types.slint";
+import { Player, Nav, Library, Queue, LyricsView, Devices, Session } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { TopBar } from "topbar.slint";
 import { PageView } from "page.slint";
 import { PlayerBar } from "player-bar.slint";
 import { QueuePanel } from "queue.slint";
+import { LyricsPanel } from "lyrics.slint";
 
-export { Player, Nav, Library, Queue, Session }
+export { Player, Nav, Library, Queue, LyricsView, Devices, Session }
 
 export component MainWindow inherits Window {
     title: Player.available ? Player.title + " · " + Player.artists : "Vivace";
@@ -70,6 +71,24 @@ export component MainWindow inherits Window {
 
                 if Queue.visible: QueuePanel {
                     width: 300px;
+                }
+
+                if LyricsView.visible: LyricsPanel {
+                    width: 340px;
+                }
+            }
+
+            if Devices.remote-name != "": Rectangle {
+                height: 28px;
+                border-radius: Theme.radius;
+                background: Theme.accent;
+
+                Text {
+                    text: "Listening on " + Devices.remote-name;
+                    color: Theme.on-accent;
+                    font-size: 13px;
+                    font-weight: 600;
+                    overflow: elide;
                 }
             }
 

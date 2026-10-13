@@ -1,5 +1,56 @@
+import { ListView } from "std-widgets.slint";
 import { Theme, Icons, Icon, IconButton, Cover, Bar } from "theme.slint";
-import { Player, Queue, RepeatMode } from "types.slint";
+import { Player, Queue, LyricsView, Devices, DeviceItem, DeviceIcon, RepeatMode } from "types.slint";
+
+component DeviceRow inherits Rectangle {
+    in property <DeviceItem> device;
+    callback clicked();
+
+    height: 48px;
+    border-radius: Theme.radius;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Icon {
+                path: root.device.kind == DeviceIcon.phone ? Icons.phone : root.device.kind == DeviceIcon.speaker ? Icons.speaker : root.device.kind == DeviceIcon.tv ? Icons.tv : Icons.computer;
+                size: 22px;
+                tint: root.device.active ? Theme.accent : Theme.text-muted;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.device.name;
+                color: root.device.active ? Theme.accent : Theme.text;
+                font-size: 14px;
+                overflow: elide;
+            }
+
+            if root.device.local || root.device.active: Text {
+                text: root.device.active ? "Playing" : "This computer";
+                color: Theme.text-muted;
+                font-size: 12px;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
 
 export component PlayerBar inherits Rectangle {
     height: 80px;
@@ -192,11 +243,89 @@ export component PlayerBar inherits Rectangle {
                 alignment: center;
 
                 IconButton {
+                    icon: Icons.lyrics;
+                    icon-size: 18px;
+                    active: LyricsView.visible;
+                    clicked => {
+                        LyricsView.visible = !LyricsView.visible;
+                        if LyricsView.visible {
+                            Queue.visible = false;
+                            LyricsView.shown();
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
                     icon: Icons.queue;
                     icon-size: 18px;
                     active: Queue.visible;
                     clicked => {
                         Queue.visible = !Queue.visible;
+                        if Queue.visible {
+                            LyricsView.visible = false;
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+
+                    IconButton {
+                        icon: Icons.devices;
+                        icon-size: 18px;
+                        active: Devices.remote-name != "";
+                        clicked => {
+                            devices-popup.show();
+                        }
+                    }
+
+                    devices-popup := PopupWindow {
+                        // Up to eight devices are shown before the list scrolls.
+                        property <length> list-height: min(Devices.items.length, 8) * 48px;
+
+                        x: 32px - self.width;
+                        y: -self.height - 12px;
+                        width: 288px;
+                        height: self.list-height + 56px;
+
+                        Rectangle {
+                            background: Theme.surface-active;
+                            border-radius: 8px;
+                            border-width: 1px;
+                            border-color: Theme.divider;
+
+                            VerticalLayout {
+                                padding: 8px;
+
+                                Text {
+                                    height: 40px;
+                                    text: "  Connect to a device";
+                                    color: Theme.text;
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                ListView {
+                                    for device[index] in Devices.items: DeviceRow {
+                                        device: device;
+                                        clicked => {
+                                            Devices.transfer(index);
+                                            devices-popup.close();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

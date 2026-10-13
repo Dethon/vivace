@@ -7,6 +7,8 @@ mod catalog;
 mod graph;
 mod home;
 mod library;
+mod lyrics;
+mod remote;
 mod search;
 mod transport;
 
@@ -15,6 +17,7 @@ use std::sync::Arc;
 use librespot_core::Session;
 
 pub use library::SavedItems;
+pub use remote::RemoteCommand;
 use transport::Transport;
 
 /// Cheaply cloneable handle for catalogue and library requests.

@@ -5,12 +5,12 @@ use std::time::Duration;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Api, Config, Engine, Event, Playback, Queue, Repeat, Start,
-    model::{Id, Image, Kind, Playlist, Track},
+    Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, Repeat, Start,
+    model::{Id, Image, Kind, Lyrics, Playlist, Track},
 };
 
 use crate::{
-    content::{Page, PageData},
+    content::{Page, PageData, Saveable},
     images::{self, ImageKey},
     media::MediaCommand,
 };
@@ -48,9 +48,15 @@ pub enum Request {
     Repeat(Repeat),
     Volume(f32),
     AddToQueue(Id),
-    SetLiked {
-        track: Id,
-        liked: bool,
+    Lyrics(Id),
+    /// Moves playback to a device; `local` when it is this computer.
+    Transfer {
+        device: Box<str>,
+        local: bool,
+    },
+    SetSaved {
+        item: Saveable,
+        saved: bool,
     },
 }
 
@@ -62,6 +68,8 @@ pub enum Update {
     Library {
         playlists: Vec<Playlist>,
         liked: Vec<Id>,
+        /// Saved albums and followed artists.
+        saved: Vec<Id>,
     },
     Page {
         token: u64,
@@ -83,13 +91,22 @@ pub enum Update {
     Shuffle(bool),
     Repeat(Repeat),
     Queue(ResolvedQueue),
+    /// The account's devices, or playback on another one, changed.
+    Connect(Connect),
+    /// Lyrics for a track; `None` when it has none.
+    Lyrics {
+        track: Id,
+        lyrics: Option<Lyrics>,
+    },
     /// Liking or unliking a track failed and must be undone on screen.
     /// A media key or the system's player controls were used.
     Media(MediaCommand),
-    LikeFailed {
-        track: Id,
-        liked: bool,
+    /// Saving or removing an item failed and must be undone on screen.
+    SaveFailed {
+        item: Saveable,
+        saved: bool,
     },
+
     Notice(String),
 }
 
@@ -142,6 +159,8 @@ async fn run(
                     engine,
                     updates: updates.clone(),
                     queue_sequence: 0,
+                    remote: None,
+                    remote_track: None,
                 };
                 if session.serve(&mut requests, &mut events).await.is_break() {
                     return;
@@ -163,6 +182,10 @@ struct Session {
     liked_uri: String,
     updates: UnboundedSender<Update>,
     queue_sequence: u64,
+    /// The device that is playing, when it is not this computer.
+    remote: Option<Box<str>>,
+    /// Track last announced for that device, to resolve each one once.
+    remote_track: Option<Id>,
 }
 
 impl Session {
@@ -191,14 +214,36 @@ impl Session {
         }
     }
 
+    /// Sends a transport command to whichever device is playing.
+    fn transport(
+        &self,
+        remote: RemoteCommand,
+        local: impl FnOnce(&Engine) -> vivace_core::Result<()>,
+    ) -> vivace_core::Result<()> {
+        let Some(device) = self.remote.clone() else {
+            return local(&self.engine);
+        };
+        self.spawn(move |api, _| async move {
+            let result = api.remote(&device, remote).await;
+            result.err().map(|error| Update::Notice(error.to_string()))
+        });
+        Ok(())
+    }
+
     fn handle(&self, request: Request) {
         let result = match request {
             Request::Library => {
                 self.spawn(|api, _| async move {
-                    match tokio::try_join!(api.playlists(), api.saved()) {
-                        Ok((playlists, saved)) => Update::Library {
+                    match tokio::try_join!(api.playlists(), api.saved(), api.followed_artists()) {
+                        Ok((playlists, saved, artists)) => Update::Library {
                             playlists,
                             liked: saved.tracks.iter().map(|saved| saved.id).collect(),
+                            saved: saved
+                                .albums
+                                .iter()
+                                .chain(&artists)
+                                .map(|saved| saved.id)
+                                .collect(),
                         },
                         Err(error) => {
                             Update::Notice(format!("Couldn't load your library: {error}"))
@@ -231,11 +276,26 @@ impl Session {
                 });
                 Ok(())
             }
-            Request::SetLiked { track, liked } => {
+            Request::Lyrics(track) => {
                 self.spawn(move |api, _| async move {
-                    let failure = api.set_saved(Kind::Track, track, liked).await.err()?;
-                    log::warn!("couldn't update Liked Songs: {failure}");
-                    Some(Update::LikeFailed { track, liked })
+                    let lyrics = api.lyrics(track).await.unwrap_or_else(|error| {
+                        log::warn!("couldn't load lyrics: {error}");
+                        None
+                    });
+                    Update::Lyrics { track, lyrics }
+                });
+                Ok(())
+            }
+            Request::SetSaved { item, saved } => {
+                self.spawn(move |api, _| async move {
+                    let result = match item {
+                        Saveable::Track(id) => api.set_saved(Kind::Track, id, saved).await,
+                        Saveable::Album(id) => api.set_saved(Kind::Album, id, saved).await,
+                        Saveable::Artist(id) => api.set_followed(id, saved).await,
+                    };
+                    let failure = result.err()?;
+                    log::warn!("couldn't update the library: {failure}");
+                    Some(Update::SaveFailed { item, saved })
                 });
                 Ok(())
             }
@@ -250,18 +310,68 @@ impl Session {
                 index,
                 repeat,
             } => self.engine.play_tracks(&tracks, index, repeat),
-            Request::Play => self.engine.play(),
-            Request::Pause => self.engine.pause(),
-            Request::Next => self.engine.next(),
-            Request::Previous => self.engine.previous(),
-            Request::Seek(position_ms) => self.engine.seek(position_ms),
-            Request::Shuffle(shuffle) => self.engine.set_shuffle(shuffle),
-            Request::Repeat(repeat) => self.engine.set_repeat(repeat),
+            Request::Play => self.transport(RemoteCommand::Resume, Engine::play),
+            Request::Pause => self.transport(RemoteCommand::Pause, Engine::pause),
+            Request::Next => self.transport(RemoteCommand::Next, Engine::next),
+            Request::Previous => self.transport(RemoteCommand::Previous, Engine::previous),
+            Request::Seek(position_ms) => self
+                .transport(RemoteCommand::Seek(position_ms), |engine| {
+                    engine.seek(position_ms)
+                }),
+            Request::Shuffle(shuffle) => self
+                .transport(RemoteCommand::Shuffle(shuffle), |engine| {
+                    engine.set_shuffle(shuffle)
+                }),
+            Request::Repeat(repeat) => match self.remote.clone() {
+                Some(device) => {
+                    self.spawn(move |api, _| async move {
+                        let context = RemoteCommand::RepeatContext(repeat == Repeat::Context);
+                        let track = RemoteCommand::RepeatTrack(repeat == Repeat::Track);
+                        let result = match api.remote(&device, context).await {
+                            Ok(()) => api.remote(&device, track).await,
+                            failed => failed,
+                        };
+                        result.err().map(|error| Update::Notice(error.to_string()))
+                    });
+                    Ok(())
+                }
+                None => self.engine.set_repeat(repeat),
+            },
             Request::Volume(volume) => {
-                self.engine.set_volume(volume);
+                match self.remote.clone() {
+                    Some(device) => self.spawn(move |api, _| async move {
+                        let result = api.remote_volume(&device, volume).await;
+                        result.err().map(|error| Update::Notice(error.to_string()))
+                    }),
+                    None => self.engine.set_volume(volume),
+                }
                 Ok(())
             }
-            Request::AddToQueue(track) => self.engine.add_to_queue(track),
+            Request::AddToQueue(track) => match self.remote {
+                Some(_) => {
+                    self.send(Update::Notice(
+                        "Queueing on another device isn't supported yet".into(),
+                    ));
+                    Ok(())
+                }
+                None => {
+                    self.send(Update::Notice("Added to queue".into()));
+                    self.engine.add_to_queue(track)
+                }
+            },
+            Request::Transfer { device, local } => {
+                if local {
+                    self.engine.transfer_here()
+                } else {
+                    self.spawn(move |api, _| async move {
+                        let result = api.transfer(&device).await;
+                        result
+                            .err()
+                            .map(|error| Update::Notice(format!("Couldn't switch device: {error}")))
+                    });
+                    Ok(())
+                }
+            }
         };
         if let Err(error) = result {
             self.send(Update::Notice(error.to_string()));
@@ -270,17 +380,7 @@ impl Session {
 
     fn forward(&mut self, event: Event) {
         match event {
-            Event::Track(id) => self.spawn(move |api, _| async move {
-                match api
-                    .tracks(&[id])
-                    .await
-                    .map(|mut tracks| tracks.pop().flatten())
-                {
-                    Ok(Some(track)) => Some(Update::NowPlaying(track)),
-                    Ok(None) => None,
-                    Err(error) => Some(Update::Notice(error.to_string())),
-                }
-            }),
+            Event::Track(id) => self.announce(id),
             Event::Queue(queue) => {
                 self.queue_sequence += 1;
                 let sequence = self.queue_sequence;
@@ -293,9 +393,44 @@ impl Session {
             Event::Volume(volume) => self.send(Update::Volume(volume)),
             Event::Shuffle(shuffle) => self.send(Update::Shuffle(shuffle)),
             Event::Repeat(repeat) => self.send(Update::Repeat(repeat)),
-            // Device switching is not built yet.
-            Event::Devices(_) | Event::Disconnected => {}
+            Event::Connect(connect) => self.connect_changed(connect),
+            Event::Disconnected => {}
         }
+    }
+
+    fn connect_changed(&mut self, connect: Connect) {
+        self.remote = connect.remote.as_ref().map(|remote| remote.device.clone());
+        match &connect.remote {
+            Some(remote) => {
+                // The remote device's track and queue stand in for the local ones.
+                if remote.queue.current != self.remote_track {
+                    self.remote_track = remote.queue.current;
+                    if let Some(track) = remote.queue.current {
+                        self.announce(track);
+                    }
+                }
+                self.queue_sequence += 1;
+                let (queue, sequence) = (remote.queue.clone(), self.queue_sequence);
+                self.spawn(move |api, _| async move { resolve_queue(&api, queue, sequence).await });
+            }
+            None => self.remote_track = None,
+        }
+        self.send(Update::Connect(connect));
+    }
+
+    /// Resolves a track and reports it as the one playing.
+    fn announce(&self, track: Id) {
+        self.spawn(move |api, _| async move {
+            let resolved = api
+                .tracks(&[track])
+                .await
+                .map(|mut tracks| tracks.pop().flatten());
+            match resolved {
+                Ok(Some(track)) => Some(Update::NowPlaying(track)),
+                Ok(None) => None,
+                Err(error) => Some(Update::Notice(error.to_string())),
+            }
+        });
     }
 
     /// Runs a request in the background and reports what it produces.

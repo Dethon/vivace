@@ -92,6 +92,10 @@ pub struct ConnectConfig {
     pub volume_steps: u16,
     /// Emit `SetQueue` player events when the queue changes (default: false)
     pub emit_set_queue_events: bool,
+    /// vivace: receives the account's cluster whenever the server returns
+    /// it in answer to this device's own state updates. Updates caused by
+    /// other devices arrive on the dealer instead.
+    pub cluster_listener: Option<tokio::sync::mpsc::UnboundedSender<crate::protocol::connect::Cluster>>,
 }
 
 impl Default for ConnectConfig {
@@ -104,6 +108,7 @@ impl Default for ConnectConfig {
             disable_volume: false,
             volume_steps: 64,
             emit_set_queue_events: false,
+            cluster_listener: None,
         }
     }
 }
