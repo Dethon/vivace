@@ -2,8 +2,8 @@
 //!
 //!   cargo run -p vivace --example snapshot -- out.png [width height]
 //!
-//! `SNAPSHOT_QUEUE=1` opens the queue panel; `SNAPSHOT_CLICK=x,y` clicks at
-//! that point first, e.g. to open a popup.
+//! `SNAPSHOT_QUEUE=1` opens the queue panel; `SNAPSHOT_CLICK=x,y` and
+//! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup.
 
 use std::rc::Rc;
 
@@ -168,6 +168,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nav = ui.global::<Nav>();
     nav.set_rows(ModelRc::new(VecModel::from(rows)));
     nav.set_can_go_back(true);
+    let playlists = ["Late Night Drive", "Focus"].map(slint::SharedString::from);
+    nav.set_editable_playlists(ModelRc::new(VecModel::from(playlists.to_vec())));
+    nav.set_page_editable(true);
 
     let player = ui.global::<Player>();
     player.set_available(true);
@@ -210,13 +213,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.show()?;
     slint::platform::update_timers_and_animations();
-    if let Some((x, y)) = std::env::var("SNAPSHOT_CLICK")
-        .ok()
-        .as_deref()
-        .and_then(|point| point.split_once(','))
-    {
+    for (variable, button) in [
+        ("SNAPSHOT_CLICK", PointerEventButton::Left),
+        ("SNAPSHOT_RIGHT_CLICK", PointerEventButton::Right),
+    ] {
+        let point = std::env::var(variable).ok();
+        let Some((x, y)) = point.as_deref().and_then(|point| point.split_once(',')) else {
+            continue;
+        };
         let position = LogicalPosition::new(x.trim().parse()?, y.trim().parse()?);
-        let button = PointerEventButton::Left;
         for event in [
             WindowEvent::PointerMoved { position },
             WindowEvent::PointerPressed { position, button },

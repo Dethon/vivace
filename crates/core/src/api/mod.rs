@@ -8,6 +8,7 @@ mod graph;
 mod home;
 mod library;
 mod lyrics;
+mod playlists;
 mod remote;
 mod search;
 mod transport;

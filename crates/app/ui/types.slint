@@ -74,7 +74,7 @@ export struct DeviceItem {
     local: bool,
 }
 
-export enum TrackAction { toggle-liked, add-to-queue, open-album, open-artist }
+export enum TrackAction { toggle-liked, add-to-queue, open-album, open-artist, remove-from-playlist }
 
 export global Player {
     // Whether a track is loaded.
@@ -128,6 +128,12 @@ export global Nav {
     // Row index within `rows`.
     callback play-track(int);
     callback track-action(int, TrackAction);
+    // Names of the playlists the user can add tracks to.
+    in property <[string]> editable-playlists;
+    // The page is one of those playlists, so tracks can be removed from it.
+    in property <bool> page-editable;
+    // Row index, then index into `editable-playlists` or -1 for a new playlist.
+    callback add-to-playlist(int, int);
     // Row index and position of the card within it.
     callback open-card(int, int);
     // How many cards fit in a row at the current width.

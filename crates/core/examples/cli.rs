@@ -1,6 +1,6 @@
 //! Developer tool exercising the engine against a real account.
 //!
-//!   cli library | home | lyrics <track id> | save-test track|album|artist <id> | playlist <id> | album <id> | artist <id> | search <query>
+//!   cli library | home | lyrics <track id> | save-test track|album|artist <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
@@ -124,6 +124,49 @@ async fn main() -> Fallible<()> {
             println!("after saving: in library = {}", present().await?);
             set(false).await?;
             println!("after removing: in library = {}", present().await?);
+        }
+        ["playlist-test"] => {
+            // Creates a playlist, edits it and deletes it again.
+            let tracks = [
+                Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?,
+                Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?,
+            ];
+            let playlist = api.create_playlist("Vivace test").await?;
+            println!(
+                "created spotify:playlist:{playlist} (delete it by hand if a later step fails)"
+            );
+            let in_library = |playlists: Vec<vivace_core::model::Playlist>| {
+                playlists.iter().any(|listed| listed.id == playlist)
+            };
+            println!("in library: {}", in_library(api.playlists().await?));
+
+            api.add_to_playlist(playlist, &tracks).await?;
+            let details = api.playlist(playlist).await?;
+            println!(
+                "after adding two: {:?} has {} tracks",
+                details.playlist.name,
+                details.entries.len()
+            );
+
+            api.remove_from_playlist(playlist, &tracks[..1]).await?;
+            let entries = api.playlist(playlist).await?.entries;
+            println!(
+                "after removing one: {} left, the other one kept: {}",
+                entries.len(),
+                entries
+                    .first()
+                    .is_some_and(|entry| entry.track == tracks[1])
+            );
+
+            api.remove_playlist(playlist).await?;
+            println!(
+                "after deleting, in library: {}",
+                in_library(api.playlists().await?)
+            );
+        }
+        ["delete-playlist", id] => {
+            api.remove_playlist(Id::from_base62(id)?).await?;
+            println!("removed from the library");
         }
         ["playlist", id] => {
             let details = api.playlist(Id::from_base62(id)?).await?;

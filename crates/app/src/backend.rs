@@ -49,6 +49,16 @@ pub enum Request {
     Volume(f32),
     AddToQueue(Id),
     Lyrics(Id),
+    /// Adds a track to a playlist; without one, to a new playlist called `name`.
+    AddToPlaylist {
+        playlist: Option<Id>,
+        name: String,
+        track: Id,
+    },
+    RemoveFromPlaylist {
+        playlist: Id,
+        track: Id,
+    },
     /// Moves playback to a device; `local` when it is this computer.
     Transfer {
         device: Box<str>,
@@ -62,7 +72,9 @@ pub enum Request {
 
 pub enum Update {
     Connecting,
-    Connected,
+    Connected {
+        username: String,
+    },
     /// Signing in failed; another attempt follows shortly.
     Failed(String),
     Library {
@@ -99,6 +111,11 @@ pub enum Update {
         lyrics: Option<Lyrics>,
     },
     /// Liking or unliking a track failed and must be undone on screen.
+    /// A playlist was edited; `notice` says how.
+    PlaylistChanged {
+        playlist: Id,
+        notice: String,
+    },
     /// A media key or the system's player controls were used.
     Media(MediaCommand),
     /// Saving or removing an item failed and must be undone on screen.
@@ -197,7 +214,8 @@ impl Session {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
 
-        if self.updates.send(Update::Connected).is_err() {
+        let username = self.engine.username();
+        if self.updates.send(Update::Connected { username }).is_err() {
             return Break(());
         }
         loop {
@@ -283,6 +301,42 @@ impl Session {
                         None
                     });
                     Update::Lyrics { track, lyrics }
+                });
+                Ok(())
+            }
+            Request::AddToPlaylist {
+                playlist,
+                name,
+                track,
+            } => {
+                self.spawn(move |api, _| async move {
+                    let result = async {
+                        let playlist = match playlist {
+                            Some(playlist) => playlist,
+                            None => api.create_playlist(&name).await?,
+                        };
+                        api.add_to_playlist(playlist, &[track]).await?;
+                        Ok::<_, vivace_core::Error>(playlist)
+                    };
+                    match result.await {
+                        Ok(playlist) => Update::PlaylistChanged {
+                            playlist,
+                            notice: format!("Added to {name}"),
+                        },
+                        Err(error) => Update::Notice(format!("Couldn't add to {name}: {error}")),
+                    }
+                });
+                Ok(())
+            }
+            Request::RemoveFromPlaylist { playlist, track } => {
+                self.spawn(move |api, _| async move {
+                    match api.remove_from_playlist(playlist, &[track]).await {
+                        Ok(()) => Update::PlaylistChanged {
+                            playlist,
+                            notice: "Removed from this playlist".into(),
+                        },
+                        Err(error) => Update::Notice(format!("Couldn't remove the track: {error}")),
+                    }
                 });
                 Ok(())
             }

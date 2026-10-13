@@ -4,6 +4,9 @@
 //! writes one PNG per step:
 //!
 //!   cargo run -p vivace --example live -- <output directory>
+//!
+//! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page and
+//! adds a track to a new playlist, to exercise playlist editing.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -238,6 +241,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(|ui| ui.global::<Player>().invoke_toggle()),
         ),
     ];
+
+    // Opt-in because it writes to the account: adds the playlist page's first
+    // track to a new playlist, which then has to be deleted by hand or with
+    // `cli delete-playlist`.
+    let mut steps = steps;
+    if std::env::var_os("LIVE_PLAYLIST_EDIT").is_some() {
+        steps.truncate(2);
+        steps.push((
+            "3-added-to-new-playlist",
+            4000,
+            Box::new(move |ui| {
+                let row = first_row(ui, RowKind::Track);
+                ui.global::<Nav>().invoke_add_to_playlist(row, -1);
+            }),
+        ));
+    }
 
     let steps = Rc::new(steps);
     let index = Rc::new(Cell::new(0));

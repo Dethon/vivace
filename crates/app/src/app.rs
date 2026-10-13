@@ -79,6 +79,7 @@ struct State {
     ever_connected: bool,
 
     playlists: Vec<Playlist>,
+    username: String,
     liked: HashSet<Id>,
     /// Saved albums and followed artists.
     saved: HashSet<Id>,
@@ -101,6 +102,30 @@ struct State {
 }
 
 impl State {
+    fn current_page(&self) -> &Page {
+        &self.history[self.position].page
+    }
+
+    /// The playlists the user owns, which are the ones they can add to.
+    fn editable(&self) -> impl Iterator<Item = &Playlist> {
+        self.playlists
+            .iter()
+            .filter(|playlist| *playlist.owner == *self.username)
+    }
+
+    /// The track shown in a row of the page, if that row is a track.
+    fn track_at(&self, row: usize) -> Option<&Track> {
+        let (Some(page), Some(&RowSource::Track { section, index })) =
+            (&self.page, self.layout.get(row))
+        else {
+            return None;
+        };
+        match &page.sections[section] {
+            Section::Tracks(tracks) => tracks.tracks.get(index).map(|entry| &entry.track),
+            _ => None,
+        }
+    }
+
     fn is_saved(&self, item: Saveable) -> bool {
         match item {
             Saveable::Track(id) => self.liked.contains(&id),
@@ -166,6 +191,7 @@ impl App {
                 cache: Vec::new(),
                 ever_connected: false,
                 playlists: Vec::new(),
+                username: String::new(),
                 liked: HashSet::new(),
                 saved: HashSet::new(),
                 now_playing: None,
@@ -263,6 +289,14 @@ impl App {
             move |row, action| {
                 if let Some(app) = app.upgrade() {
                     app.track_action(row as usize, action);
+                }
+            }
+        });
+        nav.on_add_to_playlist({
+            let app = Rc::downgrade(self);
+            move |row, playlist| {
+                if let Some(app) = app.upgrade() {
+                    app.add_to_playlist(row as usize, playlist);
                 }
             }
         });
@@ -441,7 +475,16 @@ impl App {
                     });
                 }
             }
-            Update::Connected => {
+            Update::PlaylistChanged { playlist, notice } => {
+                self.notice(&notice);
+                self.request(Request::Library);
+                // Reload the playlist if it is the one on screen.
+                if *self.state.borrow().current_page() == Page::Playlist(playlist) {
+                    self.show_current();
+                }
+            }
+            Update::Connected { username } => {
+                self.state.borrow_mut().username = username;
                 self.state.borrow_mut().ever_connected = true;
                 self.with_ui(|ui| ui.global::<Session>().set_connected(true));
                 self.request(Request::Library);
@@ -472,6 +515,7 @@ impl App {
                 self.rows.refresh_all();
                 self.queue.refresh_all();
                 self.show_player_liked();
+                self.show_editable();
             }
             Update::Page { token, result } => self.page_loaded(token, result),
             Update::Image { key, pixels } => {
@@ -1006,6 +1050,7 @@ impl App {
             }
         });
         self.library.refresh_all();
+        self.show_editable();
         self.request(Request::Page { token, page });
     }
 
@@ -1214,7 +1259,65 @@ impl App {
                     self.open(Page::Artist(artist.id));
                 }
             }
+            TrackAction::RemoveFromPlaylist => {
+                let page = self.state.borrow().current_page().clone();
+                if let Page::Playlist(playlist) = page {
+                    self.request(Request::RemoveFromPlaylist {
+                        playlist,
+                        track: track.id,
+                    });
+                }
+            }
         }
+    }
+
+    /// Adds the track in `row` to an editable playlist, or to a new one
+    /// named after the track when `choice` is negative.
+    fn add_to_playlist(&self, row: usize, choice: i32) {
+        let request = {
+            let state = self.state.borrow();
+            let Some(track) = state.track_at(row) else {
+                return;
+            };
+            let chosen = usize::try_from(choice)
+                .ok()
+                .and_then(|index| state.editable().nth(index));
+            match (chosen, choice < 0) {
+                (Some(playlist), _) => Request::AddToPlaylist {
+                    playlist: Some(playlist.id),
+                    name: playlist.name.to_string(),
+                    track: track.id,
+                },
+                (None, true) => Request::AddToPlaylist {
+                    playlist: None,
+                    name: track.name.to_string(),
+                    track: track.id,
+                },
+                (None, false) => return,
+            }
+        };
+        self.request(request);
+    }
+
+    /// Publishes which playlists accept tracks and whether the page is one.
+    fn show_editable(&self) {
+        let (names, page_editable) = {
+            let state = self.state.borrow();
+            let names: Vec<SharedString> = state
+                .editable()
+                .map(|playlist| playlist.name.as_ref().into())
+                .collect();
+            let page_editable = match state.current_page() {
+                Page::Playlist(id) => state.editable().any(|playlist| playlist.id == *id),
+                _ => false,
+            };
+            (names, page_editable)
+        };
+        self.with_ui(|ui| {
+            let nav = ui.global::<Nav>();
+            nav.set_editable_playlists(ModelRc::from(names.as_slice()));
+            nav.set_page_editable(page_editable);
+        });
     }
 
     fn toggle_liked(&self, track: Id) {
