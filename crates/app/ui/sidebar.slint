@@ -1,0 +1,138 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons, Icon, Cover } from "theme.slint";
+import { Library, Nav, LibraryItem } from "types.slint";
+
+component NavButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 40px;
+    border-radius: Theme.radius;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Icon {
+                path: root.icon;
+                size: 22px;
+                tint: root.selected || touch.has-hover ? Theme.text : Theme.text-muted;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: root.selected || touch.has-hover ? Theme.text : Theme.text-muted;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component LibraryRow inherits Rectangle {
+    in property <LibraryItem> item;
+    callback clicked();
+
+    height: 56px;
+    border-radius: Theme.radius;
+    background: root.item.selected ? Theme.surface-active : touch.has-hover ? Theme.surface-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Cover {
+                source: root.item.cover;
+                size: 40px;
+                liked-songs: root.item.liked-songs;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.item.title;
+                color: Theme.text;
+                font-size: 14px;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.item.subtitle;
+                color: Theme.text-muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component Sidebar inherits Rectangle {
+    background: Theme.surface;
+    border-radius: 8px;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        NavButton {
+            icon: Icons.home;
+            label: "Home";
+            selected: Nav.home-selected;
+            clicked => {
+                Nav.open-home();
+            }
+        }
+
+        Rectangle {
+            height: 36px;
+
+            Text {
+                x: 12px;
+                text: "Your Library";
+                color: Theme.text-muted;
+                font-size: 12px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+
+        ListView {
+            for item[index] in Library.items: LibraryRow {
+                item: item;
+                clicked => {
+                    Library.open(index);
+                }
+            }
+        }
+    }
+}

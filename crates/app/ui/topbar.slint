@@ -1,0 +1,92 @@
+import { Theme, Icons, Icon, IconButton } from "theme.slint";
+import { Nav } from "types.slint";
+
+export component TopBar inherits Rectangle {
+    // Moves keyboard focus to the search field.
+    public function focus-search() {
+        input.focus();
+    }
+
+    height: 48px;
+
+    HorizontalLayout {
+        spacing: 8px;
+
+        VerticalLayout {
+            alignment: center;
+
+            IconButton {
+                icon: Icons.back;
+                icon-size: 24px;
+                enabled: Nav.can-go-back;
+                clicked => {
+                    Nav.back();
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            IconButton {
+                icon: Icons.forward;
+                icon-size: 24px;
+                enabled: Nav.can-go-forward;
+                clicked => {
+                    Nav.forward();
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            min-width: 160px;
+            max-width: 420px;
+
+            Rectangle {
+                height: 40px;
+                border-radius: 20px;
+                background: input.has-focus ? Theme.surface-active : Theme.surface-hover;
+                border-width: input.has-focus ? 1px : 0;
+                border-color: Theme.text-muted;
+
+                Icon {
+                    x: 12px;
+                    path: Icons.search;
+                    tint: input.has-focus ? Theme.text : Theme.text-muted;
+                }
+
+                if input.text == "": Text {
+                    x: 44px;
+                    text: "What do you want to play?";
+                    color: Theme.text-faint;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                }
+
+                input := TextInput {
+                    x: 44px;
+                    width: parent.width - 60px;
+                    height: 20px;
+                    text <=> Nav.query;
+                    color: Theme.text;
+                    font-size: 14px;
+                    single-line: true;
+                    selection-background-color: Theme.accent;
+                    selection-foreground-color: Theme.on-accent;
+                    edited => {
+                        Nav.search(self.text);
+                    }
+                    accepted => {
+                        Nav.search(self.text);
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+}

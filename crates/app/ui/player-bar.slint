@@ -1,0 +1,230 @@
+import { Theme, Icons, Icon, IconButton, Cover, Bar } from "theme.slint";
+import { Player, Queue, RepeatMode } from "types.slint";
+
+export component PlayerBar inherits Rectangle {
+    height: 80px;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
+
+        // Now playing.
+        HorizontalLayout {
+            horizontal-stretch: 3;
+            min-width: 180px;
+            spacing: 12px;
+
+            VerticalLayout {
+                alignment: center;
+
+                Cover {
+                    source: Player.cover;
+                    size: 56px;
+                    opacity: Player.available ? 1 : 0;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                horizontal-stretch: 0;
+
+                Text {
+                    text: Player.title;
+                    color: title-touch.has-hover ? Theme.accent-hover : Theme.text;
+                    font-size: 14px;
+                    overflow: elide;
+
+                    title-touch := TouchArea {
+                        width: min(parent.width, parent.preferred-width);
+                        x: 0;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Player.open-album();
+                        }
+                    }
+                }
+
+                Text {
+                    text: Player.artists;
+                    color: artist-touch.has-hover ? Theme.text : Theme.text-muted;
+                    font-size: 12px;
+                    overflow: elide;
+
+                    artist-touch := TouchArea {
+                        width: min(parent.width, parent.preferred-width);
+                        x: 0;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Player.open-artist();
+                        }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                if Player.available: IconButton {
+                    icon: Player.liked ? Icons.heart : Icons.heart-outline;
+                    icon-size: 18px;
+                    active: Player.liked;
+                    clicked => {
+                        Player.toggle-liked();
+                    }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+        }
+
+        // Transport controls and progress.
+        VerticalLayout {
+            horizontal-stretch: 4;
+            max-width: 720px;
+            alignment: center;
+            spacing: 4px;
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 12px;
+
+                IconButton {
+                    icon: Icons.shuffle;
+                    icon-size: 18px;
+                    active: Player.shuffle;
+                    clicked => {
+                        Player.toggle-shuffle();
+                    }
+                }
+
+                IconButton {
+                    icon: Icons.previous;
+                    icon-size: 24px;
+                    enabled: Player.available;
+                    clicked => {
+                        Player.previous();
+                    }
+                }
+
+                Rectangle {
+                    width: 36px;
+                    height: 36px;
+                    border-radius: 18px;
+                    background: toggle.has-hover ? Theme.accent-hover : Theme.text;
+                    opacity: Player.available ? 1 : 0.35;
+
+                    Icon {
+                        path: Player.playing ? Icons.pause : Icons.play;
+                        size: 22px;
+                        tint: Theme.on-accent;
+                    }
+
+                    toggle := TouchArea {
+                        enabled: Player.available;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Player.toggle();
+                        }
+                    }
+                }
+
+                IconButton {
+                    icon: Icons.next;
+                    icon-size: 24px;
+                    enabled: Player.available;
+                    clicked => {
+                        Player.next();
+                    }
+                }
+
+                IconButton {
+                    icon: Player.repeat == RepeatMode.one ? Icons.repeat-one : Icons.repeat;
+                    icon-size: 18px;
+                    active: Player.repeat != RepeatMode.off;
+                    clicked => {
+                        Player.cycle-repeat();
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    width: 40px;
+                    text: Player.clock(Player.position-ms);
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+
+                Bar {
+                    value: Player.duration-ms > 0 ? Player.position-ms / Player.duration-ms : 0;
+                    enabled: Player.available;
+                    changed(fraction) => {
+                        Player.seek(fraction * Player.duration-ms);
+                    }
+                }
+
+                Text {
+                    width: 40px;
+                    text: Player.clock(Player.duration-ms);
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Queue and volume.
+        HorizontalLayout {
+            horizontal-stretch: 3;
+            min-width: 180px;
+            alignment: end;
+            spacing: 4px;
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    icon: Icons.queue;
+                    icon-size: 18px;
+                    active: Queue.visible;
+                    clicked => {
+                        Queue.visible = !Queue.visible;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    icon: Player.volume == 0 ? Icons.volume-off : Icons.volume;
+                    icon-size: 18px;
+                    clicked => {
+                        Player.set-volume(Player.volume == 0 ? 0.5 : 0);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                Bar {
+                    width: 96px;
+                    value: Player.volume;
+                    live: true;
+                    changed(fraction) => {
+                        Player.set-volume(fraction);
+                    }
+                }
+            }
+        }
+    }
+}

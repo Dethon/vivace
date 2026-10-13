@@ -1,0 +1,105 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons, IconButton, Cover } from "theme.slint";
+import { Queue, TrackData } from "types.slint";
+
+component QueueRow inherits Rectangle {
+    in property <TrackData> data;
+
+    height: 56px;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Cover {
+                source: root.data.cover;
+                size: 40px;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.data.title;
+                color: root.data.current ? Theme.accent : Theme.text;
+                font-size: 14px;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.data.artists;
+                color: Theme.text-muted;
+                font-size: 12px;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+export component QueuePanel inherits Rectangle {
+    background: Theme.surface;
+    border-radius: 8px;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 8px;
+
+            Text {
+                text: "Queue";
+                color: Theme.text;
+                font-size: 16px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                IconButton {
+                    icon: Icons.close;
+                    icon-size: 18px;
+                    clicked => {
+                        Queue.visible = false;
+                    }
+                }
+            }
+        }
+
+        if Queue.items.length == 0: Text {
+            text: "Nothing is queued";
+            color: Theme.text-muted;
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        if Queue.items.length > 0: ListView {
+            for item[index] in Queue.items: VerticalLayout {
+                if index == 0 || index == 1 || (Queue.queued > 0 && index == Queue.queued + 1): Text {
+                    height: 36px;
+                    x: 8px;
+                    text: index == 0 ? "Now playing" : Queue.queued > 0 && index == 1 ? "Next in queue" : Queue.context == "" ? "Next up" : "Next from " + Queue.context;
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                QueueRow {
+                    data: item;
+                }
+            }
+        }
+    }
+}

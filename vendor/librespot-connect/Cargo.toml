@@ -1,0 +1,33 @@
+# Vendored from librespot at 4a005903e078d512456fb008aaa9ba6246881bd9 with one local change; see ../README.md.
+[package]
+name = "librespot-connect"
+version = "0.8.0"
+rust-version = "1.85"
+authors = ["Paul Lietar <paul@lietar.net>"]
+license = "MIT"
+description = "The Spotify Connect logic for librespot"
+repository = "https://github.com/librespot-org/librespot"
+edition = "2024"
+
+[features]
+default = ["native-tls"]
+
+# TLS backend propagation
+native-tls = ["librespot-core/native-tls"]
+rustls-tls-native-roots = ["librespot-core/rustls-tls-native-roots"]
+rustls-tls-webpki-roots = ["librespot-core/rustls-tls-webpki-roots"]
+
+[dependencies]
+librespot-core = { git = "https://github.com/librespot-org/librespot", rev = "4a005903e078d512456fb008aaa9ba6246881bd9", default-features = false }
+librespot-playback = { git = "https://github.com/librespot-org/librespot", rev = "4a005903e078d512456fb008aaa9ba6246881bd9", default-features = false }
+librespot-protocol = { git = "https://github.com/librespot-org/librespot", rev = "4a005903e078d512456fb008aaa9ba6246881bd9", default-features = false }
+
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+log = "0.4"
+protobuf = "3.7"
+rand = { version = "0.9", default-features = false, features = ["small_rng"] }
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "sync"] }
+tokio-stream = { version = "0.1", default-features = false }
+uuid = { version = "1.18", default-features = false, features = ["v4"] }

@@ -1,0 +1,140 @@
+// Data exchanged with the Rust side. Globals keep callbacks out of the
+// component tree: any component reads state and reports actions directly.
+
+export struct TrackData {
+    title: string,
+    artists: string,
+    album: string,
+    duration: string,
+    added: string,
+    cover: image,
+    number: int,
+    explicit: bool,
+    playable: bool,
+    current: bool,
+    liked: bool,
+}
+
+export struct CardData {
+    title: string,
+    subtitle: string,
+    cover: image,
+    round: bool,
+    // Draws the Liked Songs emblem instead of artwork.
+    liked-songs: bool,
+}
+
+export struct HeaderData {
+    kind: string,
+    title: string,
+    subtitle: string,
+    cover: image,
+    round: bool,
+    liked-songs: bool,
+    playable: bool,
+}
+
+// A page is one virtualised list of rows of these kinds.
+export enum RowKind { header, section, columns, track, cards, message }
+
+export struct Row {
+    kind: RowKind,
+    text: string,
+    // Whether the track list this row belongs to shows a "Date added" column.
+    dated: bool,
+    // The list is a single album: no artwork or album column per track.
+    album-view: bool,
+    header: HeaderData,
+    track: TrackData,
+    cards: [CardData],
+}
+
+export struct LibraryItem {
+    title: string,
+    subtitle: string,
+    cover: image,
+    liked-songs: bool,
+    selected: bool,
+}
+
+export enum RepeatMode { off, all, one }
+
+export enum TrackAction { toggle-liked, add-to-queue, open-album, open-artist }
+
+export global Player {
+    // Whether a track is loaded.
+    in property <bool> available;
+    in property <string> title;
+    in property <string> artists;
+    in property <image> cover;
+    in property <bool> playing;
+    in property <bool> liked;
+    in property <int> position-ms;
+    in property <int> duration-ms;
+    in property <float> volume: 0.5;
+    in property <bool> shuffle;
+    in property <RepeatMode> repeat;
+
+    callback toggle();
+    callback next();
+    callback previous();
+    callback seek(int);
+    callback set-volume(float);
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback toggle-liked();
+    callback open-album();
+    callback open-artist();
+
+    pure public function clock(ms: int) -> string {
+        Math.floor(ms / 60000) + ":" + (Math.mod(Math.floor(ms / 1000), 60) < 10 ? "0" : "") + Math.mod(Math.floor(ms / 1000), 60)
+    }
+}
+
+export global Nav {
+    in property <[Row]> rows;
+    in property <bool> can-go-back;
+    in property <bool> can-go-forward;
+    in property <bool> home-selected;
+    // A page is being fetched; the previous one stays visible meanwhile.
+    in property <bool> loading;
+    // Scroll offset of the page, saved and restored when moving through history.
+    in-out property <length> scroll-y;
+    in-out property <string> query;
+
+    callback back();
+    callback forward();
+    callback open-home();
+    callback search(string);
+    // The header's play button.
+    callback play-page();
+    // Row index within `rows`.
+    callback play-track(int);
+    callback track-action(int, TrackAction);
+    // Row index and position of the card within it.
+    callback open-card(int, int);
+    // How many cards fit in a row at the current width.
+    callback columns-changed(int);
+}
+
+export global Library {
+    in property <[LibraryItem]> items;
+    callback open(int);
+}
+
+export global Queue {
+    in-out property <bool> visible;
+    in property <[TrackData]> items;
+    // Leading entries of `items` the user queued by hand.
+    in property <int> queued;
+    // Name of the playlist or album the rest of the queue comes from.
+    in property <string> context;
+}
+
+export global Session {
+    // Shown instead of the page while signing in or after a failure.
+    in property <string> status;
+    in property <bool> connected;
+    // Transient message, such as a failed action.
+    in property <string> notice;
+}

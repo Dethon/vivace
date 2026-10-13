@@ -1,0 +1,475 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons, Icon, IconButton, Cover } from "theme.slint";
+import { Nav, Row, RowKind, TrackData, CardData, HeaderData, TrackAction } from "types.slint";
+
+component PlayButton inherits Rectangle {
+    in property <length> size: 56px;
+    in property <bool> playing;
+    callback clicked();
+
+    width: self.size;
+    height: self.size;
+    border-radius: self.size / 2;
+    background: touch.has-hover ? Theme.accent-hover : Theme.accent;
+
+    Icon {
+        path: root.playing ? Icons.pause : Icons.play;
+        size: root.size / 2;
+        tint: Theme.on-accent;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component HeaderRow inherits Rectangle {
+    in property <HeaderData> data;
+
+    HorizontalLayout {
+        padding-left: Theme.gutter;
+        padding-right: Theme.gutter;
+        padding-top: 24px;
+        padding-bottom: 20px;
+        spacing: 24px;
+
+        Cover {
+            source: root.data.cover;
+            size: 192px;
+            round: root.data.round;
+            liked-songs: root.data.liked-songs;
+        }
+
+        VerticalLayout {
+            alignment: end;
+            spacing: 8px;
+
+            Text {
+                text: root.data.kind;
+                color: Theme.text-muted;
+                font-size: 12px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: root.data.title;
+                color: Theme.text;
+                font-size: root.data.title.character-count > 28 ? 32px : 48px;
+                font-weight: 800;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.data.subtitle;
+                color: Theme.text-muted;
+                font-size: 14px;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                alignment: start;
+                padding-top: 8px;
+
+                if root.data.playable: PlayButton {
+                    size: 48px;
+                    clicked => {
+                        Nav.play-page();
+                    }
+                }
+            }
+        }
+    }
+}
+
+component ColumnsRow inherits Rectangle {
+    in property <bool> dated;
+    in property <bool> album-view;
+
+    HorizontalLayout {
+        padding-left: Theme.gutter + 16px;
+        padding-right: Theme.gutter + 16px;
+        spacing: 16px;
+
+        Text {
+            width: 28px;
+            text: "#";
+            color: Theme.text-muted;
+            font-size: 13px;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: "Title";
+            color: Theme.text-muted;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if root.width > 720px && !root.album-view: Text {
+            width: root.width * 28%;
+            text: "Album";
+            color: Theme.text-muted;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        if root.width > 960px && root.dated: Text {
+            width: 110px;
+            text: "Date added";
+            color: Theme.text-muted;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            width: 96px;
+
+            Icon {
+                x: parent.width - self.width;
+                path: Icons.clock;
+                size: 16px;
+            }
+        }
+    }
+
+    Rectangle {
+        x: Theme.gutter;
+        y: parent.height - 1px;
+        width: parent.width - 2 * Theme.gutter;
+        height: 1px;
+        background: Theme.divider;
+    }
+}
+
+component TrackRow inherits Rectangle {
+    in property <TrackData> data;
+    // Whether the list shows a "Date added" column.
+    in property <bool> dated;
+    in property <bool> album-view;
+    callback play();
+    callback action(TrackAction);
+
+    property <bool> hovered: touch.has-hover || like.has-hover || more.has-hover;
+    property <color> title-color: !root.data.playable ? Theme.text-faint : root.data.current ? Theme.accent : Theme.text;
+
+    touch := TouchArea {
+        double-clicked => {
+            root.play();
+        }
+    }
+
+    Rectangle {
+        x: Theme.gutter;
+        width: parent.width - 2 * Theme.gutter;
+        border-radius: Theme.radius;
+        background: root.hovered ? Theme.surface-hover : transparent;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.gutter + 16px;
+        padding-right: Theme.gutter + 16px;
+        spacing: 16px;
+
+        Rectangle {
+            width: 28px;
+
+            if !root.hovered: Text {
+                width: 100%;
+                text: root.data.number;
+                color: root.data.current ? Theme.accent : Theme.text-muted;
+                font-size: 14px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            if root.hovered: IconButton {
+                x: parent.width - self.width + 6px;
+                icon: Icons.play;
+                enabled: root.data.playable;
+                clicked => {
+                    root.play();
+                }
+            }
+        }
+
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 12px;
+
+            if !root.album-view: VerticalLayout {
+                alignment: center;
+
+                Cover {
+                    source: root.data.cover;
+                    size: 40px;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+
+                Text {
+                    text: root.data.title;
+                    color: root.title-color;
+                    font-size: 14px;
+                    overflow: elide;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    if root.data.explicit: Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 2px;
+                        background: Theme.text-faint;
+
+                        Text {
+                            text: "E";
+                            color: Theme.background;
+                            font-size: 10px;
+                            font-weight: 700;
+                        }
+                    }
+
+                    artist := Text {
+                        text: root.data.artists;
+                        color: artist-touch.has-hover ? Theme.text : Theme.text-muted;
+                        font-size: 13px;
+                        overflow: elide;
+
+                        artist-touch := TouchArea {
+                            width: min(parent.width, parent.preferred-width);
+                            x: 0;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.action(TrackAction.open-artist);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.width > 720px && !root.album-view: Text {
+            width: root.width * 28%;
+            text: root.data.album;
+            color: album-touch.has-hover ? Theme.text : Theme.text-muted;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+
+            album-touch := TouchArea {
+                width: min(parent.width, parent.preferred-width);
+                x: 0;
+                mouse-cursor: pointer;
+                clicked => {
+                    root.action(TrackAction.open-album);
+                }
+            }
+        }
+
+        if root.width > 960px && root.dated: Text {
+            width: 110px;
+            text: root.data.added;
+            color: Theme.text-muted;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        HorizontalLayout {
+            width: 96px;
+            alignment: end;
+            spacing: 2px;
+
+            VerticalLayout {
+                alignment: center;
+
+                like := IconButton {
+                    icon: root.data.liked ? Icons.heart : Icons.heart-outline;
+                    icon-size: 18px;
+                    active: root.data.liked;
+                    opacity: root.data.liked || root.hovered ? 1 : 0;
+                    clicked => {
+                        root.action(TrackAction.toggle-liked);
+                    }
+                }
+            }
+
+            Text {
+                width: 40px;
+                text: root.data.duration;
+                color: Theme.text-muted;
+                font-size: 13px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+
+            VerticalLayout {
+                alignment: center;
+
+                more := IconButton {
+                    width: 24px;
+                    icon: Icons.queue;
+                    icon-size: 18px;
+                    opacity: root.hovered ? 1 : 0;
+                    clicked => {
+                        root.action(TrackAction.add-to-queue);
+                    }
+                }
+            }
+        }
+    }
+}
+
+component Card inherits Rectangle {
+    in property <CardData> data;
+    callback clicked();
+
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 4px;
+        alignment: start;
+
+        HorizontalLayout {
+            alignment: start;
+            padding-bottom: 8px;
+
+            Cover {
+                source: root.data.cover;
+                size: 152px;
+                round: root.data.round;
+                liked-songs: root.data.liked-songs;
+            }
+        }
+
+        Text {
+            text: root.data.title;
+            color: Theme.text;
+            font-size: 14px;
+            font-weight: 600;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.data.subtitle;
+            color: Theme.text-muted;
+            font-size: 13px;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component CardsRow inherits Rectangle {
+    in property <[CardData]> cards;
+    callback open(int);
+
+    HorizontalLayout {
+        padding-left: Theme.gutter - 12px;
+        padding-right: Theme.gutter - 12px;
+        alignment: start;
+
+        for card[index] in root.cards: Card {
+            width: 176px;
+            data: card;
+            clicked => {
+                root.open(index);
+            }
+        }
+    }
+}
+
+export component PageView inherits Rectangle {
+    // Cards are a fixed 176px wide; show as many as fit.
+    property <int> columns: max(2, Math.floor((self.width - 2 * Theme.gutter + 24px) / 176px));
+
+    background: Theme.surface;
+    border-radius: 8px;
+    clip: true;
+
+    init => {
+        Nav.columns-changed(self.columns);
+    }
+    changed columns => {
+        Nav.columns-changed(self.columns);
+    }
+
+    if Nav.loading: Rectangle {
+        y: 0;
+        height: 2px;
+        background: Theme.accent;
+    }
+
+    ListView {
+        content-y <=> Nav.scroll-y;
+
+        for row[index] in Nav.rows: Rectangle {
+            height: row.kind == RowKind.header ? 236px : row.kind == RowKind.section ? 64px : row.kind == RowKind.columns ? 36px : row.kind == RowKind.track ? 56px : row.kind == RowKind.cards ? 236px : 160px;
+
+            if row.kind == RowKind.header: HeaderRow {
+                data: row.header;
+            }
+
+            if row.kind == RowKind.section: Text {
+                x: Theme.gutter;
+                y: 24px;
+                width: parent.width - 2 * Theme.gutter;
+                text: row.text;
+                color: Theme.text;
+                font-size: 22px;
+                font-weight: 700;
+                overflow: elide;
+            }
+
+            if row.kind == RowKind.columns: ColumnsRow {
+                dated: row.dated;
+                album-view: row.album-view;
+            }
+
+            if row.kind == RowKind.track: TrackRow {
+                data: row.track;
+                dated: row.dated;
+                album-view: row.album-view;
+                play => {
+                    Nav.play-track(index);
+                }
+                action(action) => {
+                    Nav.track-action(index, action);
+                }
+            }
+
+            if row.kind == RowKind.cards: CardsRow {
+                cards: row.cards;
+                open(card) => {
+                    Nav.open-card(index, card);
+                }
+            }
+
+            if row.kind == RowKind.message: Text {
+                text: row.text;
+                color: Theme.text-muted;
+                font-size: 15px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

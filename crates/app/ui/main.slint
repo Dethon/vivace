@@ -1,0 +1,96 @@
+import { Theme } from "theme.slint";
+import { Player, Nav, Library, Queue, Session } from "types.slint";
+import { Sidebar } from "sidebar.slint";
+import { TopBar } from "topbar.slint";
+import { PageView } from "page.slint";
+import { PlayerBar } from "player-bar.slint";
+import { QueuePanel } from "queue.slint";
+
+export { Player, Nav, Library, Queue, Session }
+
+export component MainWindow inherits Window {
+    title: Player.available ? Player.title + " · " + Player.artists : "Vivace";
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 640px;
+    min-height: 420px;
+    background: Theme.background;
+    // Shortcuts work as soon as the window opens, without clicking first.
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " {
+                Player.toggle();
+                return accept;
+            }
+            if event.modifiers.control && event.text == "l" {
+                top-bar.focus-search();
+                return accept;
+            }
+            if event.modifiers.alt && event.text == Key.LeftArrow {
+                Nav.back();
+                return accept;
+            }
+            if event.modifiers.alt && event.text == Key.RightArrow {
+                Nav.forward();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 8px;
+            padding-bottom: 0;
+            spacing: 8px;
+
+            top-bar := TopBar { }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                Sidebar {
+                    width: 264px;
+                }
+
+                if Session.connected: PageView { }
+
+                if !Session.connected: Rectangle {
+                    background: Theme.surface;
+                    border-radius: 8px;
+
+                    Text {
+                        text: Session.status;
+                        color: Theme.text-muted;
+                        font-size: 15px;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if Queue.visible: QueuePanel {
+                    width: 300px;
+                }
+            }
+
+            PlayerBar { }
+        }
+
+        if Session.notice != "": Rectangle {
+            y: root.height - 80px - 8px - self.height;
+            width: min(notice.preferred-width + 32px, root.width - 32px);
+            height: 36px;
+            border-radius: 18px;
+            background: Theme.text;
+
+            notice := Text {
+                width: parent.width - 32px;
+                text: Session.notice;
+                color: Theme.on-accent;
+                font-size: 13px;
+                horizontal-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
