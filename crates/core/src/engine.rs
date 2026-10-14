@@ -8,13 +8,8 @@ use librespot_connect::{
     Spirc,
 };
 use librespot_core::{
-    Session, SessionConfig, SpotifyUri,
-    authentication::Credentials,
-    cache::Cache,
-    config::DeviceType,
-    dealer::protocol::{Message, TransferOptions},
-    error::ErrorKind,
-    spclient::TransferRequest,
+    Session, SessionConfig, SpotifyUri, authentication::Credentials, cache::Cache,
+    config::DeviceType, dealer::protocol::Message, error::ErrorKind,
 };
 use librespot_playback::{
     audio_backend::{self, Sink},
@@ -463,12 +458,7 @@ impl Engine {
 
     /// Moves playback from whichever device has it to this computer.
     pub fn transfer_here(&self) -> Result<()> {
-        // A request without options would go out with an empty body, which
-        // Spotify refuses over HTTP/1.1 for want of a length.
-        let request = TransferRequest {
-            transfer_options: TransferOptions::default(),
-        };
-        Ok(self.spirc.transfer(Some(request))?)
+        Ok(self.spirc.transfer(None)?)
     }
 
     pub fn play(&self) -> Result<()> {
