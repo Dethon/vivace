@@ -10,7 +10,7 @@ use protobuf::Message;
 use super::{Api, transport::decode};
 use crate::{
     Error, Result,
-    model::{Id, Kind},
+    model::{Id, ItemRef, Kind},
 };
 
 const PROTOBUF: &str = "application/x-protobuf";
@@ -57,20 +57,17 @@ impl Api {
             .await
     }
 
-    /// Appends tracks to a playlist the user can edit.
-    pub async fn add_to_playlist(&self, playlist: Id, tracks: &[Id]) -> Result<()> {
+    /// Appends tracks or episodes to a playlist the user can edit.
+    pub async fn add_to_playlist(&self, playlist: Id, items: &[ItemRef]) -> Result<()> {
         let mut add = Add::new();
-        add.items = tracks
-            .iter()
-            .map(|&track| item(Kind::Track.uri(track)))
-            .collect();
+        add.items = items.iter().map(|entry| item(entry.uri())).collect();
         add.set_add_last(true);
         self.change(&playlist_changes(playlist), added(add)).await
     }
 
-    /// Removes every occurrence of the given tracks from a playlist.
-    pub async fn remove_from_playlist(&self, playlist: Id, tracks: &[Id]) -> Result<()> {
-        let uris = tracks.iter().map(|&track| Kind::Track.uri(track));
+    /// Removes every occurrence of the given items from a playlist.
+    pub async fn remove_from_playlist(&self, playlist: Id, items: &[ItemRef]) -> Result<()> {
+        let uris = items.iter().map(|entry| entry.uri());
         self.change(&playlist_changes(playlist), removed(uris))
             .await
     }

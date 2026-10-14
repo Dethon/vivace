@@ -16,6 +16,7 @@ const COLLECTION_PAGE: i32 = 2000;
 // Collection sets: liked tracks and saved albums share one, followed artists have their own.
 const SET_ITEMS: &str = "collection";
 const SET_ARTISTS: &str = "artist";
+const SET_SHOWS: &str = "show";
 
 // Messages of Spotify's collection service, which librespot does not ship.
 #[derive(Clone, PartialEq, prost::Message)]
@@ -148,6 +149,28 @@ impl Api {
             .collect();
         artists.sort_by_key(|saved| std::cmp::Reverse(saved.added_at));
         Ok(artists)
+    }
+
+    /// Podcasts the user follows, newest first.
+    pub async fn saved_shows(&self) -> Result<Vec<Saved>> {
+        let mut shows: Vec<Saved> = self
+            .collection(SET_SHOWS)
+            .await?
+            .iter()
+            .filter_map(|item| {
+                Some(Saved {
+                    id: Kind::Show.id(&item.uri)?,
+                    added_at: item.added_at.into(),
+                })
+            })
+            .collect();
+        shows.sort_by_key(|saved| std::cmp::Reverse(saved.added_at));
+        Ok(shows)
+    }
+
+    /// Follows or unfollows a podcast.
+    pub async fn set_show_saved(&self, show: Id, saved: bool) -> Result<()> {
+        self.write(SET_SHOWS, Kind::Show.uri(show), saved).await
     }
 
     /// Adds a track or album to the library, or removes it.

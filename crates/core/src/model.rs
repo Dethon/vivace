@@ -13,6 +13,8 @@ pub enum Kind {
     Album,
     Artist,
     Playlist,
+    Episode,
+    Show,
 }
 
 impl Kind {
@@ -22,6 +24,8 @@ impl Kind {
             Kind::Album => "album",
             Kind::Artist => "artist",
             Kind::Playlist => "playlist",
+            Kind::Episode => "episode",
+            Kind::Show => "show",
         }
     }
 
@@ -34,6 +38,41 @@ impl Kind {
     pub fn id(self, uri: &str) -> Option<Id> {
         let id = uri.strip_prefix("spotify:")?.strip_prefix(self.as_str())?;
         Id::from_base62(id.strip_prefix(':')?).ok()
+    }
+}
+
+/// Something the player can play: a track or a podcast episode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemRef {
+    pub kind: Kind,
+    pub id: Id,
+}
+
+impl ItemRef {
+    pub fn track(id: Id) -> Self {
+        Self {
+            kind: Kind::Track,
+            id,
+        }
+    }
+
+    pub fn episode(id: Id) -> Self {
+        Self {
+            kind: Kind::Episode,
+            id,
+        }
+    }
+
+    pub fn uri(self) -> String {
+        self.kind.uri(self.id)
+    }
+
+    /// Reads a track or episode URI; anything else is not playable.
+    pub fn from_uri(uri: &str) -> Option<Self> {
+        Kind::Track
+            .id(uri)
+            .map(Self::track)
+            .or_else(|| Kind::Episode.id(uri).map(Self::episode))
     }
 }
 
@@ -71,8 +110,12 @@ pub struct AlbumRef {
     pub name: Box<str>,
 }
 
+/// A track, or a podcast episode in a track's shape: its show stands in
+/// for both the artist and the album.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
+    /// [`Kind::Track`] or [`Kind::Episode`].
+    pub kind: Kind,
     pub id: Id,
     pub name: Box<str>,
     pub artists: Box<[ArtistRef]>,
@@ -81,6 +124,42 @@ pub struct Track {
     pub explicit: bool,
     pub playable: bool,
     pub cover: Option<Image>,
+}
+
+impl Track {
+    pub fn item(&self) -> ItemRef {
+        ItemRef {
+            kind: self.kind,
+            id: self.id,
+        }
+    }
+
+    pub fn is_episode(&self) -> bool {
+        self.kind == Kind::Episode
+    }
+}
+
+/// A podcast episode with what a show's episode list adds to a track.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Episode {
+    pub track: Track,
+    /// Unix seconds, or 0 when unknown.
+    pub published_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Show {
+    pub id: Id,
+    pub name: Box<str>,
+    pub publisher: Box<str>,
+    pub image: Option<Image>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShowDetails {
+    pub show: Show,
+    /// The most recent episodes, newest first.
+    pub episodes: Vec<Episode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +217,7 @@ pub struct Playlist {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaylistEntry {
-    pub track: Id,
+    pub item: ItemRef,
     /// Unix seconds, or 0 when unknown.
     pub added_at: i64,
 }
@@ -146,7 +225,7 @@ pub struct PlaylistEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistDetails {
     pub playlist: Playlist,
-    /// Track entries in playlist order; episodes and local files are omitted.
+    /// Tracks and episodes in playlist order; local files are omitted.
     pub entries: Vec<PlaylistEntry>,
 }
 
@@ -193,6 +272,7 @@ pub struct SearchResults {
     pub artists: Vec<Artist>,
     pub albums: Vec<Album>,
     pub playlists: Vec<Playlist>,
+    pub shows: Vec<Show>,
 }
 
 #[cfg(test)]
@@ -208,6 +288,25 @@ mod tests {
         assert_eq!(Kind::Album.id(&uri), None);
         assert_eq!(
             Kind::Track.id("spotify:tracks:4uLU6hMCjMI75M1A2tKUQC"),
+            None
+        );
+    }
+
+    #[test]
+    fn playable_items_are_read_from_track_and_episode_uris() {
+        let id = Id::from_base62("4uLU6hMCjMI75M1A2tKUQC").unwrap();
+        let episode = ItemRef::from_uri("spotify:episode:4uLU6hMCjMI75M1A2tKUQC");
+        assert_eq!(episode, Some(ItemRef::episode(id)));
+        assert_eq!(
+            episode.unwrap().uri(),
+            "spotify:episode:4uLU6hMCjMI75M1A2tKUQC"
+        );
+        assert_eq!(
+            ItemRef::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC"),
+            Some(ItemRef::track(id))
+        );
+        assert_eq!(
+            ItemRef::from_uri("spotify:album:4uLU6hMCjMI75M1A2tKUQC"),
             None
         );
     }

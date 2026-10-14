@@ -17,7 +17,7 @@ use crate::{
     LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session,
     SettingsView, TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
-    content::{Card, Page, PageData, Saveable, Section},
+    content::{Card, Dates, Page, PageData, Saveable, Section},
     format,
     images::{Images, Shape},
     media::{Attach, MediaCommand, MediaKeys},
@@ -132,7 +132,9 @@ impl State {
     fn is_saved(&self, item: Saveable) -> bool {
         match item {
             Saveable::Track(id) => self.liked.contains(&id),
-            Saveable::Album(id) | Saveable::Artist(id) => self.saved.contains(&id),
+            Saveable::Album(id) | Saveable::Artist(id) | Saveable::Show(id) => {
+                self.saved.contains(&id)
+            }
         }
     }
 }
@@ -462,26 +464,20 @@ impl App {
             }
         }));
         player.on_open_album(self.handler(|app| {
-            let album = app
+            let page = app.state.borrow().now_playing.as_ref().map(album_page);
+            if let Some(page) = page {
+                app.open(page);
+            }
+        }));
+        player.on_open_artist(self.handler(|app| {
+            let page = app
                 .state
                 .borrow()
                 .now_playing
                 .as_ref()
-                .map(|track| track.album.id);
-            if let Some(album) = album {
-                app.open(Page::Album(album));
-            }
-        }));
-        player.on_open_artist(self.handler(|app| {
-            let state = app.state.borrow();
-            let artist = state
-                .now_playing
-                .as_ref()
-                .and_then(|track| track.artists.first());
-            let artist = artist.map(|artist| artist.id);
-            drop(state);
-            if let Some(artist) = artist {
-                app.open(Page::Artist(artist));
+                .and_then(artist_page);
+            if let Some(page) = page {
+                app.open(page);
             }
         }));
         player.on_seek({
@@ -886,9 +882,17 @@ impl App {
         let view = ui.global::<LyricsView>();
         let track = {
             let mut state = self.state.borrow_mut();
-            let Some(track) = state.now_playing.as_ref().map(|track| track.id) else {
-                view.set_status("Play something to see its lyrics".into());
-                return;
+            let track = match &state.now_playing {
+                Some(track) if track.is_episode() => {
+                    view.set_lines(ModelRc::default());
+                    view.set_status("Podcasts have no lyrics".into());
+                    return;
+                }
+                Some(track) => track.id,
+                None => {
+                    view.set_status("Play something to see its lyrics".into());
+                    return;
+                }
             };
             if !view.get_visible()
                 || state
@@ -1338,7 +1342,7 @@ impl App {
                     state.started = Some((uri.clone(), page_title(&page)));
                     Request::PlayContext {
                         uri: uri.clone(),
-                        start: Start::Track(track.id),
+                        start: Start::Item(track.item()),
                         shuffle: state.shuffle,
                         repeat: state.repeat,
                     }
@@ -1346,7 +1350,11 @@ impl App {
                 None => {
                     state.started = None;
                     Request::PlayTracks {
-                        tracks: tracks.tracks.iter().map(|entry| entry.track.id).collect(),
+                        tracks: tracks
+                            .tracks
+                            .iter()
+                            .map(|entry| entry.track.item())
+                            .collect(),
                         index: index as u32,
                         repeat: state.repeat,
                     }
@@ -1370,12 +1378,14 @@ impl App {
             }
         };
         match action {
+            // Episodes are kept through their show, not liked one by one.
+            TrackAction::ToggleLiked if track.is_episode() => {}
             TrackAction::ToggleLiked => self.toggle_liked(track.id),
-            TrackAction::AddToQueue => self.request(Request::AddToQueue(track.id)),
-            TrackAction::OpenAlbum => self.open(Page::Album(track.album.id)),
+            TrackAction::AddToQueue => self.request(Request::AddToQueue(track.item())),
+            TrackAction::OpenAlbum => self.open(album_page(&track)),
             TrackAction::OpenArtist => {
-                if let Some(artist) = track.artists.first() {
-                    self.open(Page::Artist(artist.id));
+                if let Some(page) = artist_page(&track) {
+                    self.open(page);
                 }
             }
             TrackAction::RemoveFromPlaylist => {
@@ -1383,7 +1393,7 @@ impl App {
                 if let Page::Playlist(playlist) = page {
                     self.request(Request::RemoveFromPlaylist {
                         playlist,
-                        track: track.id,
+                        track: track.item(),
                     });
                 }
             }
@@ -1512,12 +1522,12 @@ impl App {
                 (Some(playlist), _) => Request::AddToPlaylist {
                     playlist: Some(playlist.id),
                     name: playlist.name.to_string(),
-                    track: track.id,
+                    track: track.item(),
                 },
                 (None, true) => Request::AddToPlaylist {
                     playlist: None,
                     name: track.name.to_string(),
-                    track: track.id,
+                    track: track.item(),
                 },
                 (None, false) => return,
             }
@@ -1576,7 +1586,7 @@ impl App {
             let mut state = self.state.borrow_mut();
             let set = match item {
                 Saveable::Track(_) => &mut state.liked,
-                Saveable::Album(_) | Saveable::Artist(_) => &mut state.saved,
+                Saveable::Album(_) | Saveable::Artist(_) | Saveable::Show(_) => &mut state.saved,
             };
             if saved {
                 set.insert(item.id());
@@ -1590,7 +1600,7 @@ impl App {
                 self.show_player_liked();
             }
             // The header is the page's first row.
-            Saveable::Album(_) | Saveable::Artist(_) => self.rows.refresh(0),
+            Saveable::Album(_) | Saveable::Artist(_) | Saveable::Show(_) => self.rows.refresh(0),
         }
     }
 
@@ -1602,7 +1612,18 @@ impl App {
                 .as_ref()
                 .is_some_and(|track| state.liked.contains(&track.id))
         };
-        self.with_ui(|ui| ui.global::<Player>().set_liked(liked));
+        let likeable = {
+            let state = self.state.borrow();
+            state
+                .now_playing
+                .as_ref()
+                .is_some_and(|track| !track.is_episode())
+        };
+        self.with_ui(|ui| {
+            let player = ui.global::<Player>();
+            player.set_liked(liked);
+            player.set_likeable(likeable);
+        });
     }
 
     /// Redraws the rows showing `track`, wherever they are.
@@ -1661,7 +1682,8 @@ impl App {
                         playable: page.context.is_some(),
                         save: match header.save {
                             Some(Saveable::Album(_)) => SaveKind::Album,
-                            Some(Saveable::Artist(_)) => SaveKind::Artist,
+                            // A show is followed, like an artist.
+                            Some(Saveable::Artist(_) | Saveable::Show(_)) => SaveKind::Artist,
                             Some(Saveable::Track(_)) | None => SaveKind::None,
                         },
                         saved: header.save.is_some_and(|item| state.is_saved(item)),
@@ -1684,7 +1706,8 @@ impl App {
                 };
                 Row {
                     kind: RowKind::Columns,
-                    dated: tracks.dated,
+                    text: tracks.dates.label().into(),
+                    dated: tracks.dates != Dates::None,
                     album_view: tracks.album_view,
                     ..Row::default()
                 }
@@ -1697,7 +1720,7 @@ impl App {
                 Row {
                     kind: RowKind::Track,
                     album_view: tracks.album_view,
-                    dated: tracks.dated,
+                    dated: tracks.dates != Dates::None,
                     track: TrackData {
                         number: index as i32 + 1,
                         added: format::date(entry.added_at).into(),
@@ -1764,6 +1787,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|playing| playing.id == track.id),
             liked: state.liked.contains(&track.id),
+            likeable: !track.is_episode(),
         }
     }
 
@@ -1897,6 +1921,25 @@ fn layout(page: &PageData, columns: usize) -> Vec<RowSource> {
         }
     }
     rows
+}
+
+/// Where a track's album link leads: its album, or an episode's show.
+fn album_page(track: &Track) -> Page {
+    if track.is_episode() {
+        Page::Show(track.album.id)
+    } else {
+        Page::Album(track.album.id)
+    }
+}
+
+/// Where a track's artist link leads: its first artist, or an episode's show.
+fn artist_page(track: &Track) -> Option<Page> {
+    let artist = track.artists.first()?;
+    Some(if track.is_episode() {
+        Page::Show(artist.id)
+    } else {
+        Page::Artist(artist.id)
+    })
 }
 
 fn page_title(page: &PageData) -> String {

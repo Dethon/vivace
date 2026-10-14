@@ -13,6 +13,8 @@ export struct TrackData {
     playable: bool,
     current: bool,
     liked: bool,
+    // False for podcast episodes, which have no like button.
+    likeable: bool,
 }
 
 export struct CardData {
@@ -44,6 +46,7 @@ export enum RowKind { header, section, columns, track, cards, message }
 
 export struct Row {
     kind: RowKind,
+    // A section's title, a message, or the heading of a list's date column.
     text: string,
     // Whether the track list this row belongs to shows a "Date added" column.
     dated: bool,
@@ -88,6 +91,7 @@ export global Player {
     in property <image> cover;
     in property <bool> playing;
     in property <bool> liked;
+    in property <bool> likeable: true;
     in property <int> position-ms;
     in property <int> duration-ms;
     in property <float> volume: 0.5;
@@ -105,8 +109,13 @@ export global Player {
     callback open-album();
     callback open-artist();
 
+    pure function two-digits(value: int) -> string {
+        (value < 10 ? "0" : "") + value
+    }
+
+    // `3:07`, or `1:02:07` from an hour up.
     pure public function clock(ms: int) -> string {
-        Math.floor(ms / 60000) + ":" + (Math.mod(Math.floor(ms / 1000), 60) < 10 ? "0" : "") + Math.mod(Math.floor(ms / 1000), 60)
+        ms >= 3600000 ? Math.floor(ms / 3600000) + ":" + two-digits(Math.mod(Math.floor(ms / 60000), 60)) + ":" + two-digits(Math.mod(Math.floor(ms / 1000), 60)) : Math.floor(ms / 60000) + ":" + two-digits(Math.mod(Math.floor(ms / 1000), 60))
     }
 }
 

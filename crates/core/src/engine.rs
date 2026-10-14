@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     Api, Connect, Result, auth,
-    model::{Id, Kind},
+    model::{ItemRef, Kind},
 };
 
 const CLUSTER_UPDATES: &str = "hm://connect-state/v1/cluster";
@@ -82,7 +82,7 @@ impl Default for Config {
 pub enum Start {
     Beginning,
     Index(u32),
-    Track(Id),
+    Item(ItemRef),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -101,7 +101,7 @@ pub struct Playback {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QueueItem {
-    pub track: Id,
+    pub item: ItemRef,
     /// Added by the user rather than coming from the playing context.
     pub queued: bool,
 }
@@ -110,15 +110,15 @@ pub struct QueueItem {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Queue {
     pub context_uri: Box<str>,
-    pub current: Option<Id>,
-    /// Upcoming tracks; episodes and local files are omitted.
+    pub current: Option<ItemRef>,
+    /// Upcoming tracks and episodes; local files are omitted.
     pub next: Vec<QueueItem>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// The local player moved to another track.
-    Track(Id),
+    /// The local player moved to another track or episode.
+    Item(ItemRef),
     Playback(Playback),
     Position(u32),
     Stopped,
@@ -286,7 +286,7 @@ impl Engine {
             playing_track: match start {
                 Start::Beginning => None,
                 Start::Index(index) => Some(PlayingTrack::Index(index)),
-                Start::Track(id) => Some(PlayingTrack::Uri(Kind::Track.uri(id))),
+                Start::Item(item) => Some(PlayingTrack::Uri(item.uri())),
             },
         };
         // Loads are ignored unless this device is the active one.
@@ -297,7 +297,7 @@ impl Engine {
     }
 
     /// Plays an ad-hoc list of tracks, such as search results, from `index`.
-    pub fn play_tracks(&self, tracks: &[Id], index: u32, repeat: Repeat) -> Result<()> {
+    pub fn play_tracks(&self, items: &[ItemRef], index: u32, repeat: Repeat) -> Result<()> {
         let options = LoadRequestOptions {
             start_playing: true,
             seek_to: 0,
@@ -308,15 +308,19 @@ impl Engine {
             })),
             playing_track: Some(PlayingTrack::Index(index)),
         };
-        let uris = tracks.iter().map(|&id| Kind::Track.uri(id)).collect();
+        let uris = items.iter().map(|item| item.uri()).collect();
         self.spirc.activate()?;
         self.spirc.load(LoadRequest::from_tracks(uris, options))?;
         Ok(())
     }
 
     /// Queues a track to play after the current one and anything already queued.
-    pub fn add_to_queue(&self, track: Id) -> Result<()> {
-        Ok(self.spirc.add_to_queue(SpotifyUri::Track { id: track })?)
+    pub fn add_to_queue(&self, item: ItemRef) -> Result<()> {
+        let uri = match item.kind {
+            Kind::Episode => SpotifyUri::Episode { id: item.id },
+            _ => SpotifyUri::Track { id: item.id },
+        };
+        Ok(self.spirc.add_to_queue(uri)?)
     }
 
     /// Removes the tracks the user queued, keeping those of the context.
@@ -447,7 +451,9 @@ fn player_event(event: PlayerEvent) -> Option<Event> {
     Some(match event {
         // `Loading` carries the id that was requested, which is the one the
         // queue and playlists use; `TrackChanged` reports a relinked id.
-        PlayerEvent::Loading { track_id, .. } => Event::Track(Id::try_from(&track_id).ok()?),
+        PlayerEvent::Loading { track_id, .. } => {
+            Event::Item(ItemRef::from_uri(&track_id.to_uri())?)
+        }
         PlayerEvent::Playing { position_ms, .. } => Event::Playback(Playback {
             playing: true,
             position_ms,
@@ -477,12 +483,12 @@ fn player_event(event: PlayerEvent) -> Option<Event> {
             ..
         } => Event::Queue(Queue {
             context_uri: context_uri.into(),
-            current: current_track.and_then(|track| Kind::Track.id(&track.uri)),
+            current: current_track.and_then(|track| ItemRef::from_uri(&track.uri)),
             next: next_tracks
                 .iter()
                 .filter_map(|track| {
                     Some(QueueItem {
-                        track: Kind::Track.id(&track.uri)?,
+                        item: ItemRef::from_uri(&track.uri)?,
                         queued: track.provider == QUEUE_PROVIDER,
                     })
                 })

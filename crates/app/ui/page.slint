@@ -128,6 +128,7 @@ component HeaderRow inherits Rectangle {
 
 component ColumnsRow inherits Rectangle {
     in property <bool> dated;
+    in property <string> date-label;
     in property <bool> album-view;
 
     HorizontalLayout {
@@ -160,16 +161,16 @@ component ColumnsRow inherits Rectangle {
             vertical-alignment: center;
         }
 
-        if root.width > 960px && root.dated: Text {
+        if root.width > 960px && root.dated && !root.album-view: Text {
             width: 110px;
-            text: "Date added";
+            text: root.date-label;
             color: Theme.text-muted;
             font-size: 13px;
             vertical-alignment: center;
         }
 
         Rectangle {
-            width: 96px;
+            width: 112px;
 
             Icon {
                 x: parent.width - self.width;
@@ -210,7 +211,7 @@ component TrackRow inherits Rectangle {
                 }
             }
 
-            MenuItem {
+            if root.data.likeable: MenuItem {
                 title: root.data.liked ? "Remove from Liked Songs" : "Save to Liked Songs";
                 activated => {
                     root.action(TrackAction.toggle-liked);
@@ -243,13 +244,13 @@ component TrackRow inherits Rectangle {
             }
 
             MenuItem {
-                title: "Go to album";
+                title: root.data.likeable ? "Go to album" : "Go to podcast";
                 activated => {
                     root.action(TrackAction.open-album);
                 }
             }
 
-            MenuItem {
+            if root.data.likeable: MenuItem {
                 title: "Go to artist";
                 activated => {
                     root.action(TrackAction.open-artist);
@@ -345,7 +346,8 @@ component TrackRow inherits Rectangle {
                         }
 
                         artist := Text {
-                            text: root.data.artists;
+                            // A show's own page says when each episode came out instead of repeating its name.
+                            text: root.album-view && root.dated ? root.data.added : root.data.artists;
                             color: artist-touch.has-hover ? Theme.text : Theme.text-muted;
                             font-size: 13px;
                             overflow: elide;
@@ -381,7 +383,7 @@ component TrackRow inherits Rectangle {
                 }
             }
 
-            if root.width > 960px && root.dated: Text {
+            if root.width > 960px && root.dated && !root.album-view: Text {
                 width: 110px;
                 text: root.data.added;
                 color: Theme.text-muted;
@@ -391,7 +393,7 @@ component TrackRow inherits Rectangle {
             }
 
             HorizontalLayout {
-                width: 96px;
+                width: 112px;
                 alignment: end;
                 spacing: 2px;
 
@@ -400,6 +402,7 @@ component TrackRow inherits Rectangle {
 
                     like := IconButton {
                         icon: root.data.liked ? Icons.heart : Icons.heart-outline;
+                        visible: root.data.likeable;
                         icon-size: 18px;
                         active: root.data.liked;
                         opacity: root.data.liked || root.hovered ? 1 : 0;
@@ -410,7 +413,7 @@ component TrackRow inherits Rectangle {
                 }
 
                 Text {
-                    width: 40px;
+                    width: 56px;
                     text: root.data.duration;
                     color: Theme.text-muted;
                     font-size: 13px;
@@ -547,6 +550,7 @@ export component PageView inherits Rectangle {
 
             if row.kind == RowKind.columns: ColumnsRow {
                 dated: row.dated;
+                date-label: row.text;
                 album-view: row.album-view;
             }
 

@@ -117,7 +117,7 @@ export component PlayerBar inherits Rectangle {
             VerticalLayout {
                 alignment: center;
 
-                if Player.available: IconButton {
+                if Player.available && Player.likeable: IconButton {
                     icon: Player.liked ? Icons.heart : Icons.heart-outline;
                     icon-size: 18px;
                     active: Player.liked;
@@ -206,7 +206,7 @@ export component PlayerBar inherits Rectangle {
                 spacing: 8px;
 
                 Text {
-                    width: 40px;
+                    width: 52px;
                     text: Player.clock(Player.position-ms);
                     color: Theme.text-muted;
                     font-size: 11px;
@@ -223,7 +223,7 @@ export component PlayerBar inherits Rectangle {
                 }
 
                 Text {
-                    width: 40px;
+                    width: 52px;
                     text: Player.clock(Player.duration-ms);
                     color: Theme.text-muted;
                     font-size: 11px;

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     Api,
     graph::{
-        AlbumData, ArtistData, Items, Lenient, PlaylistData, TrackData, Wrapped, album, artist,
-        playlist, track,
+        AlbumData, ArtistData, Items, Lenient, PlaylistData, ShowData, TrackData, Wrapped, album,
+        artist, playlist, show, track,
     },
     transport::Query,
 };
@@ -61,6 +61,8 @@ struct Search {
     albums_v2: Items<Wrapped<Lenient<AlbumData>>>,
     artists: Items<Wrapped<Lenient<ArtistData>>>,
     playlists: Items<Wrapped<Lenient<PlaylistData>>>,
+    #[serde(default)]
+    podcasts: Items<Wrapped<Lenient<ShowData>>>,
 }
 
 impl From<Search> for SearchResults {
@@ -79,6 +81,7 @@ impl From<Search> for SearchResults {
             artists: collect(search.artists, artist),
             albums: collect(search.albums_v2, album),
             playlists: collect(search.playlists, playlist),
+            shows: collect(search.podcasts, show),
         }
     }
 }
@@ -133,6 +136,10 @@ mod tests {
                       "images": {"items": [{"sources": [{"url": "https://i.scdn.co/image/pl", "width": null}]}]},
                       "ownerV2": {"data": {"name": "Spotify"}}}}
         ]},
+        "podcasts": {"items": [
+            {"data": {"__typename": "Podcast", "uri": "spotify:show:2Fi1hZJoCaFDmuAYxHwDku", "name": "Daft Punk",
+                      "publisher": {"name": "Melissa"}, "coverArt": {"sources": [{"url": "https://i.scdn.co/image/s", "width": 300}]}}}
+        ]},
         "genres": {"items": [{"data": {"name": "ignored"}}]}
     }}"#;
 
@@ -171,6 +178,9 @@ mod tests {
 
         assert_eq!(&*results.artists[0].name, "Daft Punk");
         assert_eq!(results.artists[0].image, None);
+
+        assert_eq!(&*results.shows[0].name, "Daft Punk");
+        assert_eq!(&*results.shows[0].publisher, "Melissa");
 
         assert_eq!(&*results.playlists[0].owner, "Spotify");
         assert_eq!(

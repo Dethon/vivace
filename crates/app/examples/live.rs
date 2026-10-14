@@ -8,6 +8,7 @@
 //! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page,
 //! adds a track to a new playlist, renames that playlist and deletes it. With
 //! `LIVE_NO_PLAYBACK=1` it only browses, leaving other devices undisturbed.
+//! With `LIVE_PODCAST=1` it opens a followed podcast and plays an episode.
 //! With `LIVE_SETTINGS=1` it changes settings and signs out; afterwards the
 //! saved login is gone, so keep a copy of it to restore.
 
@@ -133,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // SAFETY: nothing has started a thread yet.
     unsafe { vivace::limit_player_threads() };
     vivace::tune_allocator();
+    vivace::init_logging();
     let directory = PathBuf::from(
         std::env::args()
             .nth(1)
@@ -317,6 +319,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.global::<Dialog>().invoke_confirmed("".into());
                 }
             }),
+        ));
+    }
+
+    // Opens the first followed podcast from Home and plays its latest episode.
+    if std::env::var_os("LIVE_PODCAST").is_some() {
+        steps.truncate(1);
+        steps.push((
+            "p2-show",
+            4000,
+            Box::new(|ui| {
+                let rows = ui.global::<Nav>().get_rows();
+                let shelf = rows
+                    .iter()
+                    .position(|row| row.kind == RowKind::Section && row.text == "Your podcasts");
+                match shelf {
+                    Some(title) => ui.global::<Nav>().invoke_open_card(title as i32 + 1, 0),
+                    None => println!("no podcasts shelf on Home"),
+                }
+            }),
+        ));
+        steps.push((
+            "p3-episode-playing",
+            7000,
+            Box::new(move |ui| {
+                ui.global::<Queue>().set_visible(true);
+                ui.global::<Nav>()
+                    .invoke_play_track(first_row(ui, RowKind::Track));
+            }),
+        ));
+        steps.push((
+            "p4-paused",
+            1500,
+            Box::new(|ui| ui.global::<Player>().invoke_toggle()),
         ));
     }
 

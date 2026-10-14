@@ -7,11 +7,7 @@ use protobuf::Message;
 use serde::Serialize;
 
 use super::{Api, transport::decode};
-use crate::{
-    Repeat, Result, Start,
-    engine::QUEUE_PROVIDER,
-    model::{Id, Kind},
-};
+use crate::{Repeat, Result, Start, engine::QUEUE_PROVIDER, model::ItemRef};
 
 const JSON: &str = "application/json";
 const PROTOBUF: &str = "application/x-protobuf";
@@ -72,8 +68,8 @@ impl RemoteCommand {
 pub enum RemotePlay<'a> {
     /// A playlist, album, artist or collection, by URI.
     Context { uri: &'a str, start: Start },
-    /// An ad-hoc list of tracks, starting at `index`.
-    Tracks { tracks: &'a [Id], index: u32 },
+    /// An ad-hoc list of tracks and episodes, starting at `index`.
+    Tracks { tracks: &'a [ItemRef], index: u32 },
 }
 
 // The shape Spotify's own clients send for `play`; field names are the
@@ -168,8 +164,8 @@ fn play_body(play: RemotePlay<'_>, shuffle: bool, repeat: Repeat) -> PlayEnvelop
                     track_uri: None,
                     track_index: Some(index),
                 },
-                Start::Track(track) => SkipTo {
-                    track_uri: Some(Kind::Track.uri(track)),
+                Start::Item(item) => SkipTo {
+                    track_uri: Some(item.uri()),
                     track_index: None,
                 },
             },
@@ -181,8 +177,8 @@ fn play_body(play: RemotePlay<'_>, shuffle: bool, repeat: Repeat) -> PlayEnvelop
                 pages: vec![Page {
                     tracks: tracks
                         .iter()
-                        .map(|&track| TrackRef {
-                            uri: Kind::Track.uri(track),
+                        .map(|item| TrackRef {
+                            uri: item.uri(),
                             provider: None,
                         })
                         .collect(),
@@ -228,12 +224,12 @@ impl Api {
     }
 
     /// Queues a track on another device.
-    pub async fn remote_queue(&self, device: &str, track: Id) -> Result<()> {
+    pub async fn remote_queue(&self, device: &str, item: ItemRef) -> Result<()> {
         let envelope = QueueEnvelope {
             command: QueueCommand {
                 endpoint: "add_to_queue",
                 track: TrackRef {
-                    uri: Kind::Track.uri(track),
+                    uri: item.uri(),
                     provider: Some(QUEUE_PROVIDER),
                 },
             },
@@ -296,6 +292,7 @@ impl Api {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Id;
 
     fn json(command: RemoteCommand) -> String {
         serde_json::to_string(&command.body()).unwrap()
@@ -306,7 +303,7 @@ mod tests {
         let track = Id::from_base62("4uLU6hMCjMI75M1A2tKUQC").unwrap();
         let play = RemotePlay::Context {
             uri: "spotify:album:4m2880jivSbbyEGAKfITCa",
-            start: Start::Track(track),
+            start: Start::Item(ItemRef::track(track)),
         };
         let body = serde_json::to_value(play_body(play, true, Repeat::Context)).unwrap();
         let command = &body["command"];
@@ -332,8 +329,9 @@ mod tests {
     #[test]
     fn a_track_list_travels_as_a_page() {
         let track = Id::from_base62("4uLU6hMCjMI75M1A2tKUQC").unwrap();
+        let tracks = [ItemRef::track(track), ItemRef::episode(track)];
         let play = RemotePlay::Tracks {
-            tracks: &[track, track],
+            tracks: &tracks,
             index: 1,
         };
         let body = serde_json::to_value(play_body(play, false, Repeat::Off)).unwrap();
@@ -345,6 +343,10 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+        assert_eq!(
+            command["context"]["pages"][0]["tracks"][1]["uri"],
+            "spotify:episode:4uLU6hMCjMI75M1A2tKUQC"
         );
         assert_eq!(command["options"]["skip_to"]["track_index"], 1);
     }

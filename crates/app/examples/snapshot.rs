@@ -71,6 +71,7 @@ fn track(number: i32) -> TrackData {
         playable: number != 5,
         current: number == 3,
         liked: number % 3 == 0,
+        likeable: true,
     }
 }
 

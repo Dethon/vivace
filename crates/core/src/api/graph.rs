@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, de::IgnoredAny};
 
-use crate::model::{Album, AlbumKind, AlbumRef, Artist, ArtistRef, Image, Kind, Playlist, Track};
+use crate::model::{
+    Album, AlbumKind, AlbumRef, Artist, ArtistRef, Image, Kind, Playlist, Show, Track,
+};
 
 const COVER_WIDTH: u32 = 300;
 
@@ -187,6 +189,7 @@ pub(super) fn artist_refs(artists: Items<ArtistData>) -> Box<[ArtistRef]> {
 
 pub(super) fn track(data: TrackData) -> Option<Track> {
     Some(Track {
+        kind: Kind::Track,
         id: Kind::Track.id(&data.uri)?,
         name: data.name.into(),
         artists: artist_refs(data.artists),
@@ -249,5 +252,34 @@ pub(super) fn playlist(data: PlaylistData) -> Option<Playlist> {
         description: data.description.into(),
         length: 0,
         image: data.images.items.first().and_then(Sources::image),
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ShowData {
+    pub uri: String,
+    pub name: String,
+    #[serde(default)]
+    pub publisher: Option<Publisher>,
+    #[serde(default)]
+    pub cover_art: Option<Sources>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct Publisher {
+    pub name: String,
+}
+
+pub(super) fn show(data: ShowData) -> Option<Show> {
+    Some(Show {
+        id: Kind::Show.id(&data.uri)?,
+        name: data.name.into(),
+        publisher: data
+            .publisher
+            .map(|publisher| publisher.name)
+            .unwrap_or_default()
+            .into(),
+        image: data.cover_art.as_ref().and_then(Sources::image),
     })
 }

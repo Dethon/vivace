@@ -6,7 +6,7 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, Image, Kind, Lyrics, Playlist, Track},
+    model::{Id, Image, ItemRef, Kind, Lyrics, Playlist, Track},
 };
 
 use crate::{
@@ -42,7 +42,7 @@ pub enum Request {
         repeat: Repeat,
     },
     PlayTracks {
-        tracks: Vec<Id>,
+        tracks: Vec<ItemRef>,
         index: u32,
         repeat: Repeat,
     },
@@ -54,17 +54,17 @@ pub enum Request {
     Shuffle(bool),
     Repeat(Repeat),
     Volume(f32),
-    AddToQueue(Id),
+    AddToQueue(ItemRef),
     Lyrics(Id),
     /// Adds a track to a playlist; without one, to a new playlist called `name`.
     AddToPlaylist {
         playlist: Option<Id>,
         name: String,
-        track: Id,
+        track: ItemRef,
     },
     RemoveFromPlaylist {
         playlist: Id,
-        track: Id,
+        track: ItemRef,
     },
     RenamePlaylist {
         playlist: Id,
@@ -98,7 +98,7 @@ pub enum Update {
     Library {
         playlists: Vec<Playlist>,
         liked: Vec<Id>,
-        /// Saved albums and followed artists.
+        /// Saved albums, followed artists and followed podcasts.
         saved: Vec<Id>,
     },
     Page {
@@ -245,7 +245,7 @@ struct Session {
     /// The device that is playing, when it is not this computer.
     remote: Option<Box<str>>,
     /// Track last announced for that device, to resolve each one once.
-    remote_track: Option<Id>,
+    remote_track: Option<ItemRef>,
 }
 
 impl Session {
@@ -302,14 +302,21 @@ impl Session {
             Request::Configure(_) | Request::SignOut => Ok(()),
             Request::Library => {
                 self.spawn(|api, _| async move {
-                    match tokio::try_join!(api.playlists(), api.saved(), api.followed_artists()) {
-                        Ok((playlists, saved, artists)) => Update::Library {
+                    let library = tokio::try_join!(
+                        api.playlists(),
+                        api.saved(),
+                        api.followed_artists(),
+                        api.saved_shows()
+                    );
+                    match library {
+                        Ok((playlists, saved, artists, shows)) => Update::Library {
                             playlists,
                             liked: saved.tracks.iter().map(|saved| saved.id).collect(),
                             saved: saved
                                 .albums
                                 .iter()
                                 .chain(&artists)
+                                .chain(&shows)
                                 .map(|saved| saved.id)
                                 .collect(),
                         },
@@ -422,6 +429,7 @@ impl Session {
                         Saveable::Track(id) => api.set_saved(Kind::Track, id, saved).await,
                         Saveable::Album(id) => api.set_saved(Kind::Album, id, saved).await,
                         Saveable::Artist(id) => api.set_followed(id, saved).await,
+                        Saveable::Show(id) => api.set_show_saved(id, saved).await,
                     };
                     let failure = result.err()?;
                     log::warn!("couldn't update the library: {failure}");
@@ -539,7 +547,7 @@ impl Session {
 
     fn forward(&mut self, event: Event) {
         match event {
-            Event::Track(id) => self.announce(id),
+            Event::Item(item) => self.announce(item),
             Event::Queue(queue) => {
                 self.queue_sequence += 1;
                 let sequence = self.queue_sequence;
@@ -577,11 +585,11 @@ impl Session {
         self.send(Update::Connect(connect));
     }
 
-    /// Resolves a track and reports it as the one playing.
-    fn announce(&self, track: Id) {
+    /// Resolves a track or episode and reports it as the one playing.
+    fn announce(&self, item: ItemRef) {
         self.spawn(move |api, _| async move {
             let resolved = api
-                .tracks(&[track])
+                .items(&[item])
                 .await
                 .map(|mut tracks| tracks.pop().flatten());
             match resolved {
@@ -619,10 +627,10 @@ impl Session {
 async fn resolve_queue(api: &Api, queue: Queue, sequence: u64) -> Option<Update> {
     let current = queue.current?;
     let upcoming = &queue.next[..queue.next.len().min(QUEUE_LENGTH)];
-    let ids: Vec<Id> = std::iter::once(current)
-        .chain(upcoming.iter().map(|item| item.track))
+    let items: Vec<ItemRef> = std::iter::once(current)
+        .chain(upcoming.iter().map(|item| item.item))
         .collect();
-    let mut resolved = api.tracks(&ids).await.ok()?.into_iter();
+    let mut resolved = api.items(&items).await.ok()?.into_iter();
 
     let mut tracks = vec![resolved.next().flatten()?];
     let mut queued = 0;

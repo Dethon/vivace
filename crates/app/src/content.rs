@@ -2,7 +2,7 @@
 
 use vivace_core::{
     Api, Result,
-    model::{Album, AlbumKind, Artist, Id, Image, Kind, Playlist, ShelfItem, Track},
+    model::{Album, AlbumKind, Artist, Id, Image, ItemRef, Kind, Playlist, ShelfItem, Show, Track},
 };
 
 use crate::format;
@@ -19,6 +19,7 @@ pub enum Page {
     Album(Id),
     Artist(Id),
     Search(String),
+    Show(Id),
     /// The settings screen, which has no content to fetch.
     Settings,
 }
@@ -50,11 +51,13 @@ pub enum Saveable {
     Track(Id),
     Album(Id),
     Artist(Id),
+    Show(Id),
 }
 
 impl Saveable {
     pub fn id(self) -> Id {
-        let (Saveable::Track(id) | Saveable::Album(id) | Saveable::Artist(id)) = self;
+        let (Saveable::Track(id) | Saveable::Album(id) | Saveable::Artist(id) | Saveable::Show(id)) =
+            self;
         id
     }
 }
@@ -70,16 +73,36 @@ pub enum Section {
 pub struct TrackSection {
     pub title: Option<&'static str>,
     pub tracks: Vec<TrackEntry>,
-    /// Whether to show when each track was added.
-    pub dated: bool,
+    /// Which date, if any, each row shows.
+    pub dates: Dates,
     /// All tracks are from the album the page is about.
     pub album_view: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dates {
+    None,
+    /// When the track was added to the playlist or library.
+    Added,
+    /// When the episode was published.
+    Released,
+}
+
+impl Dates {
+    /// The column heading, empty for no date column.
+    pub fn label(self) -> &'static str {
+        match self {
+            Dates::None => "",
+            Dates::Added => "Date added",
+            Dates::Released => "Released",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackEntry {
     pub track: Track,
-    /// Unix seconds, or 0 when unknown.
+    /// The date shown for the row as Unix seconds, or 0 when unknown.
     pub added_at: i64,
 }
 
@@ -112,6 +135,7 @@ impl Page {
             Page::Album(id) => album(api, *id).await,
             Page::Artist(id) => artist(api, *id).await,
             Page::Search(query) => search(api, query).await,
+            Page::Show(id) => show(api, *id).await,
             Page::Settings => Ok(PageData {
                 header: None,
                 context: None,
@@ -122,16 +146,26 @@ impl Page {
 }
 
 async fn home(api: &Api) -> Result<PageData> {
-    let (feed, saved, artists) = tokio::join!(api.home(), api.saved(), api.followed_artists());
+    let (feed, saved, artists, shows) = tokio::join!(
+        api.home(),
+        api.saved(),
+        api.followed_artists(),
+        api.saved_shows()
+    );
     // The feed is a private interface; the library still makes a useful page without it.
     let feed = feed.unwrap_or_else(|error| {
         log::warn!("couldn't load the home feed: {error}");
         Vec::new()
     });
-    let (saved, artists) = (saved?, artists?);
+    let (saved, artists, shows) = (saved?, artists?, shows?);
+    let show_ids: Vec<Id> = shows.iter().map(|saved| saved.id).collect();
     let album_ids: Vec<Id> = saved.albums.iter().map(|saved| saved.id).collect();
     let artist_ids: Vec<Id> = artists.iter().map(|saved| saved.id).collect();
-    let (albums, artists) = tokio::try_join!(api.albums(&album_ids), api.artists(&artist_ids))?;
+    let (albums, artists, shows) = tokio::try_join!(
+        api.albums(&album_ids),
+        api.artists(&artist_ids),
+        api.shows(&show_ids)
+    )?;
 
     let mut sections = Vec::new();
     for shelf in &feed {
@@ -146,6 +180,8 @@ async fn home(api: &Api) -> Result<PageData> {
     push_cards(&mut sections, "Your albums", false, albums);
     let artists = artists.iter().flatten().map(artist_card);
     push_cards(&mut sections, "Your artists", false, artists);
+    let shows = shows.iter().flatten().map(show_card);
+    push_cards(&mut sections, "Your podcasts", false, shows);
     if sections.is_empty() {
         sections.push(Section::Message("Nothing to show yet".into()));
     }
@@ -186,7 +222,7 @@ async fn liked(api: &Api, liked_uri: &str) -> Result<PageData> {
         context: Some(liked_uri.into()),
         sections: vec![track_list(
             tracks,
-            true,
+            Dates::Added,
             false,
             "Songs you like will appear here",
         )],
@@ -195,9 +231,9 @@ async fn liked(api: &Api, liked_uri: &str) -> Result<PageData> {
 
 async fn playlist(api: &Api, id: Id) -> Result<PageData> {
     let details = api.playlist(id).await?;
-    let ids: Vec<Id> = details.entries.iter().map(|entry| entry.track).collect();
+    let items: Vec<ItemRef> = details.entries.iter().map(|entry| entry.item).collect();
     let tracks: Vec<TrackEntry> = api
-        .tracks(&ids)
+        .items(&items)
         .await?
         .into_iter()
         .zip(&details.entries)
@@ -229,7 +265,12 @@ async fn playlist(api: &Api, id: Id) -> Result<PageData> {
             save: None,
         }),
         context: Some(Kind::Playlist.uri(id)),
-        sections: vec![track_list(tracks, true, false, "This playlist is empty")],
+        sections: vec![track_list(
+            tracks,
+            Dates::Added,
+            false,
+            "This playlist is empty",
+        )],
     })
 }
 
@@ -264,7 +305,7 @@ async fn album(api: &Api, id: Id) -> Result<PageData> {
         context: Some(Kind::Album.uri(id)),
         sections: vec![track_list(
             tracks,
-            false,
+            Dates::None,
             true,
             "This release has no tracks",
         )],
@@ -284,7 +325,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
                 .take(POPULAR_TRACKS)
                 .map(undated)
                 .collect(),
-            dated: false,
+            dates: Dates::None,
             album_view: false,
         }));
     }
@@ -328,6 +369,37 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
     })
 }
 
+async fn show(api: &Api, id: Id) -> Result<PageData> {
+    let details = api.show(id).await?;
+    let episodes: Vec<TrackEntry> = details
+        .episodes
+        .into_iter()
+        .map(|episode| TrackEntry {
+            track: episode.track,
+            added_at: episode.published_at,
+        })
+        .collect();
+
+    Ok(PageData {
+        header: Some(Header {
+            kind: "Podcast",
+            title: details.show.name.into(),
+            subtitle: details.show.publisher.into(),
+            image: details.show.image,
+            round: false,
+            liked_songs: false,
+            save: Some(Saveable::Show(id)),
+        }),
+        context: Some(Kind::Show.uri(id)),
+        sections: vec![track_list(
+            episodes,
+            Dates::Released,
+            true,
+            "This podcast has no episodes",
+        )],
+    })
+}
+
 async fn search(api: &Api, query: &str) -> Result<PageData> {
     let results = api.search(query).await?;
 
@@ -341,7 +413,7 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
                 .take(SEARCH_TRACKS)
                 .map(undated)
                 .collect(),
-            dated: false,
+            dates: Dates::None,
             album_view: false,
         }));
     }
@@ -363,6 +435,12 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
         false,
         results.playlists.iter().map(playlist_card),
     );
+    push_cards(
+        &mut sections,
+        "Podcasts",
+        false,
+        results.shows.iter().map(show_card),
+    );
     if sections.is_empty() {
         sections.push(Section::Message(format!("No results for “{query}”")));
     }
@@ -374,14 +452,14 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
     })
 }
 
-fn track_list(tracks: Vec<TrackEntry>, dated: bool, album_view: bool, empty: &str) -> Section {
+fn track_list(tracks: Vec<TrackEntry>, dates: Dates, album_view: bool, empty: &str) -> Section {
     if tracks.is_empty() {
         Section::Message(empty.into())
     } else {
         Section::Tracks(TrackSection {
             title: None,
             tracks,
-            dated,
+            dates,
             album_view,
         })
     }
@@ -475,6 +553,17 @@ fn release_card(album: &Album) -> Card {
             kind.into()
         },
         ..album_card(album)
+    }
+}
+
+fn show_card(show: &Show) -> Card {
+    Card {
+        title: show.name.to_string(),
+        subtitle: show.publisher.to_string(),
+        image: show.image.clone(),
+        round: false,
+        liked_songs: false,
+        target: Page::Show(show.id),
     }
 }
 

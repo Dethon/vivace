@@ -17,8 +17,8 @@ use super::{Api, transport::decode};
 use crate::{
     Error, Result,
     model::{
-        Album, AlbumDetails, AlbumKind, AlbumRef, Artist, ArtistDetails, ArtistRef, Id, Image,
-        Kind, Playlist, PlaylistDetails, PlaylistEntry, Track,
+        Album, AlbumDetails, AlbumKind, AlbumRef, Artist, ArtistDetails, ArtistRef, Episode, Id,
+        Image, ItemRef, Kind, Playlist, PlaylistDetails, PlaylistEntry, Show, ShowDetails, Track,
     },
 };
 
@@ -30,6 +30,8 @@ const PLAYLIST_PAGE: usize = 2000;
 const COVER_WIDTH: i32 = 300;
 // Releases shown per discography section of an artist page.
 const ARTIST_RELEASES: usize = 50;
+// Episodes listed on a show's page.
+const SHOW_EPISODES: usize = 100;
 
 impl Api {
     /// Resolves tracks in the order given; ids Spotify does not know yield `None`.
@@ -39,6 +41,73 @@ impl Api {
             track(&country, message)
         })
         .await
+    }
+
+    /// Resolves a mix of tracks and episodes in the order given.
+    pub async fn items(&self, items: &[ItemRef]) -> Result<Vec<Option<Track>>> {
+        let ids = |kind| -> Vec<Id> {
+            items
+                .iter()
+                .filter(|item| item.kind == kind)
+                .map(|item| item.id)
+                .collect()
+        };
+        let (track_ids, episode_ids) = (ids(Kind::Track), ids(Kind::Episode));
+        let (tracks, episodes) =
+            tokio::try_join!(self.tracks(&track_ids), self.episodes(&episode_ids))?;
+
+        let (mut tracks, mut episodes) = (tracks.into_iter(), episodes.into_iter());
+        Ok(items
+            .iter()
+            .map(|item| match item.kind {
+                Kind::Episode => episodes.next().flatten().map(|episode| episode.track),
+                _ => tracks.next().flatten(),
+            })
+            .collect())
+    }
+
+    /// Resolves podcast episodes in the order given.
+    pub async fn episodes(&self, ids: &[Id]) -> Result<Vec<Option<Episode>>> {
+        let country = self.0.session().country();
+        self.metadata(Kind::Episode, ExtensionKind::EPISODE_V4, ids, |message| {
+            episode(&country, message)
+        })
+        .await
+    }
+
+    /// Resolves show summaries in the order given.
+    pub async fn shows(&self, ids: &[Id]) -> Result<Vec<Option<Show>>> {
+        self.metadata(Kind::Show, ExtensionKind::SHOW_V4, ids, show)
+            .await
+    }
+
+    /// A show with its most recent episodes.
+    pub async fn show(&self, id: Id) -> Result<ShowDetails> {
+        let message = self
+            .metadata(
+                Kind::Show,
+                ExtensionKind::SHOW_V4,
+                &[id],
+                |message: &proto::Show| Some(message.clone()),
+            )
+            .await?
+            .pop()
+            .flatten()
+            .ok_or(Error::NotFound)?;
+
+        let ids: Vec<Id> = message
+            .episode
+            .iter()
+            .filter_map(|episode| Id::from_raw(episode.gid()).ok())
+            .take(SHOW_EPISODES)
+            .collect();
+        let mut episodes: Vec<Episode> = self.episodes(&ids).await?.into_iter().flatten().collect();
+        episodes.sort_by_key(|episode| std::cmp::Reverse(episode.published_at));
+
+        Ok(ShowDetails {
+            show: show(&message).ok_or(Error::NotFound)?,
+            episodes,
+        })
     }
 
     /// Resolves album summaries in the order given.
@@ -149,7 +218,7 @@ impl Api {
             position += items.len();
             entries.extend(items.iter().filter_map(|item| {
                 Some(PlaylistEntry {
-                    track: Kind::Track.id(item.uri())?,
+                    item: ItemRef::from_uri(item.uri())?,
                     added_at: item.attributes.timestamp() / 1000,
                 })
             }));
@@ -291,6 +360,7 @@ impl Api {
 fn track(country: &str, message: &proto::Track) -> Option<Track> {
     let album = message.album.as_ref()?;
     Some(Track {
+        kind: Kind::Track,
         id: Id::from_raw(message.gid()).ok()?,
         name: message.name().into(),
         artists: artist_refs(&message.artist),
@@ -303,6 +373,56 @@ fn track(country: &str, message: &proto::Track) -> Option<Track> {
         playable: playable(country, message),
         cover: cover(&album.cover_group.image).or_else(|| cover(&album.cover)),
     })
+}
+
+fn episode(country: &str, message: &proto::Episode) -> Option<Episode> {
+    let show = message.show.as_ref()?;
+    let show_id = Id::from_raw(show.gid()).ok()?;
+    let date = &message.publish_time;
+    Some(Episode {
+        track: Track {
+            kind: Kind::Episode,
+            id: Id::from_raw(message.gid()).ok()?,
+            name: message.name().into(),
+            artists: Box::new([ArtistRef {
+                id: show_id,
+                name: show.name().into(),
+            }]),
+            album: AlbumRef {
+                id: show_id,
+                name: show.name().into(),
+            },
+            duration_ms: message.duration().try_into().unwrap_or_default(),
+            explicit: message.explicit(),
+            playable: !message.audio.is_empty() && allowed(country, &message.restriction),
+            cover: cover(&message.cover_image.image).or_else(|| cover(&show.cover_image.image)),
+        },
+        published_at: unix_seconds(date.year(), date.month(), date.day()),
+    })
+}
+
+fn show(message: &proto::Show) -> Option<Show> {
+    Some(Show {
+        id: Id::from_raw(message.gid()).ok()?,
+        name: message.name().into(),
+        publisher: message.publisher().into(),
+        image: cover(&message.cover_image.image),
+    })
+}
+
+/// Midnight UTC of a calendar date as Unix seconds; 0 for an unset date.
+fn unix_seconds(year: i32, month: i32, day: i32) -> i64 {
+    if year <= 0 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return 0;
+    }
+    // Days from civil, after Howard Hinnant.
+    let (year, month, day) = (i64::from(year), i64::from(month), i64::from(day));
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400);
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    (era * 146_097 + day_of_era - 719_468) * 86_400
 }
 
 fn album(message: &proto::Album) -> Option<Album> {
@@ -478,6 +598,15 @@ mod tests {
             .restriction
             .push(restriction(None, Some("ES")));
         assert!(!playable("ES", &track));
+    }
+
+    #[test]
+    fn dates_convert_to_unix_seconds() {
+        assert_eq!(unix_seconds(1970, 1, 1), 0);
+        assert_eq!(unix_seconds(2000, 2, 29), 951_782_400);
+        assert_eq!(unix_seconds(2026, 8, 3), 1_785_715_200);
+        assert_eq!(unix_seconds(0, 0, 0), 0);
+        assert_eq!(unix_seconds(2026, 13, 1), 0);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use librespot_protocol::{connect::Cluster, devices::DeviceType};
 
-use crate::{Queue, QueueItem, Repeat, engine::QUEUE_PROVIDER, model::Kind};
+use crate::{Queue, QueueItem, Repeat, engine::QUEUE_PROVIDER, model::ItemRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceKind {
@@ -109,13 +109,13 @@ impl Connect {
                     device: active.into(),
                     queue: Queue {
                         context_uri: state.context_uri.as_str().into(),
-                        current: Kind::Track.id(&state.track.uri),
+                        current: ItemRef::from_uri(&state.track.uri),
                         next: state
                             .next_tracks
                             .iter()
                             .filter_map(|track| {
                                 Some(QueueItem {
-                                    track: Kind::Track.id(&track.uri)?,
+                                    item: ItemRef::from_uri(&track.uri)?,
                                     queued: track.provider == QUEUE_PROVIDER,
                                 })
                             })

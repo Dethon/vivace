@@ -1,7 +1,8 @@
 //! Developer tool exercising the engine against a real account.
 //!
-//!   cli library | home | lyrics <track id> | save-test track|album|artist <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
+//!   cli library | home | shows | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
+//!   cli listen <context uri> [seconds]     plays and prints what happens
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!
@@ -19,7 +20,7 @@ use librespot_playback::{
 
 use vivace_core::{
     Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, Kind, Track},
+    model::{Id, ItemRef, Kind, Track},
 };
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -103,7 +104,11 @@ async fn run() -> Fallible<()> {
             }
             None => println!("no lyrics"),
         },
-        ["save-test", kind @ ("track" | "album" | "artist"), id] => {
+        [
+            "save-test",
+            kind @ ("track" | "album" | "artist" | "show"),
+            id,
+        ] => {
             // Saves and removes an item that is not in the library, leaving it as it was.
             let id = Id::from_base62(id)?;
             let kind = *kind;
@@ -111,6 +116,7 @@ async fn run() -> Fallible<()> {
                 Ok::<_, vivace_core::Error>(match kind {
                     "track" => api.saved().await?.tracks.iter().any(|saved| saved.id == id),
                     "album" => api.saved().await?.albums.iter().any(|saved| saved.id == id),
+                    "show" => api.saved_shows().await?.iter().any(|saved| saved.id == id),
                     _ => api
                         .followed_artists()
                         .await?
@@ -123,6 +129,7 @@ async fn run() -> Fallible<()> {
                 match kind {
                     "track" => api.set_saved(Kind::Track, id, saved).await,
                     "album" => api.set_saved(Kind::Album, id, saved).await,
+                    "show" => api.set_show_saved(id, saved).await,
                     _ => api.set_followed(id, saved).await,
                 }
             };
@@ -134,11 +141,33 @@ async fn run() -> Fallible<()> {
             set(false).await?;
             println!("after removing: in library = {}", present().await?);
         }
+        ["show", id] => {
+            let details = api.show(Id::from_base62(id)?).await?;
+            println!("{:?}", details.show);
+            for episode in details.episodes.iter().take(6) {
+                println!(
+                    "  published {} cover {:?}",
+                    episode.published_at, episode.track.cover
+                );
+                print_tracks(std::slice::from_ref(&episode.track));
+            }
+            println!("{} episodes", details.episodes.len());
+        }
+        ["shows"] => {
+            let saved = api.saved_shows().await?;
+            let ids: Vec<Id> = saved.iter().map(|saved| saved.id).collect();
+            for show in api.shows(&ids).await?.into_iter().flatten() {
+                println!(
+                    "  {} | {} | {} | {:?}",
+                    show.id, show.name, show.publisher, show.image
+                );
+            }
+        }
         ["playlist-test"] => {
             // Creates a playlist, edits it and deletes it again.
             let tracks = [
-                Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?,
-                Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?,
+                ItemRef::track(Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?),
+                ItemRef::track(Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?),
             ];
             let playlist = api.create_playlist("Vivace test").await?;
             println!(
@@ -162,9 +191,7 @@ async fn run() -> Fallible<()> {
             println!(
                 "after removing one: {} left, the other one kept: {}",
                 entries.len(),
-                entries
-                    .first()
-                    .is_some_and(|entry| entry.track == tracks[1])
+                entries.first().is_some_and(|entry| entry.item == tracks[1])
             );
 
             api.remove_playlist(playlist).await?;
@@ -185,8 +212,8 @@ async fn run() -> Fallible<()> {
                 details.entries.len(),
                 started.elapsed()
             );
-            let ids: Vec<Id> = details.entries.iter().map(|entry| entry.track).collect();
-            let tracks: Vec<Track> = api.tracks(&ids).await?.into_iter().flatten().collect();
+            let items: Vec<ItemRef> = details.entries.iter().map(|entry| entry.item).collect();
+            let tracks: Vec<Track> = api.items(&items).await?.into_iter().flatten().collect();
             println!(
                 "{} tracks resolved after {:?}",
                 tracks.len(),
@@ -247,6 +274,11 @@ async fn run() -> Fallible<()> {
         ["remote", rest @ ..] => {
             let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
             remote(&engine, &mut events, seconds).await?;
+        }
+        ["listen", uri, rest @ ..] => {
+            let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
+            engine.play_context(uri, Start::Beginning, false, Repeat::Off)?;
+            watch(&engine, &mut events, seconds, false).await?;
         }
         ["play", uri, rest @ ..] => {
             let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
@@ -321,20 +353,21 @@ async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<
                                 println!("-> play an album there, from its third track");
                                 let play = RemotePlay::Context {
                                     uri: "spotify:album:4m2880jivSbbyEGAKfITCa",
-                                    start: Start::Track(Id::from_base62("0oks4FnzhNp5QPTZtoet7c")?),
+                                    start: Start::Item(ItemRef::track(Id::from_base62("0oks4FnzhNp5QPTZtoet7c")?)),
                                 };
                                 api.remote_play(device, play, false, Repeat::Off).await?;
                             }
                             4 => {
                                 println!("-> queue a track there");
-                                api.remote_queue(device, Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?).await?;
+                                let queued = ItemRef::track(Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?);
+                        api.remote_queue(device, queued).await?;
                             }
                             5 => {
                                 println!("-> play a list of two tracks there, from the first");
                                 let tracks = [
-                                    Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?,
-                                    Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?,
-                                ];
+                            ItemRef::track(Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?),
+                            ItemRef::track(Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?),
+                        ];
         let play = RemotePlay::Tracks { tracks: &tracks, index: 0 };
                                 api.remote_play(device, play, false, Repeat::Off).await?;
                             }
@@ -388,7 +421,7 @@ async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -
                 Some(Event::Position(position_ms)) if position_ms > 4000 && !skipped => {
                     skipped = true;
                     println!("-> queue a track, skip to it, then shuffle");
-                    engine.add_to_queue(Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?)?;
+                    engine.add_to_queue(ItemRef::track(Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?))?;
                     engine.next()?;
                     engine.set_shuffle(true)?;
                 }
@@ -412,7 +445,7 @@ async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -
                     queue.current,
                     queue.next.len(),
                     queue.next.iter().filter(|item| item.queued).count(),
-                    queue.next.iter().take(3).map(|item| item.track).collect::<Vec<_>>()
+                    queue.next.iter().take(3).map(|item| item.item.id).collect::<Vec<_>>()
                 ),
                 Some(event) => println!("{event:?}"),
                 None => return Ok(()),
