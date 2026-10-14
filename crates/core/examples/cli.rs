@@ -8,6 +8,7 @@
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
+//!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
 //!
@@ -24,7 +25,7 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start,
+    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start, VolumeLevel,
     model::{Id, ItemRef, Kind, Progress, Track},
 };
 
@@ -58,6 +59,9 @@ async fn run() -> Fallible<()> {
     if args.first() == Some(&"silent") {
         args.remove(0);
         config.sink = Some(Arc::new(|| Box::new(Silence::default())));
+    }
+    if args.first() == Some(&"options-test") {
+        return options_test(config).await;
     }
 
     let started = Instant::now();
@@ -497,6 +501,169 @@ impl Sink for Silence {
         std::thread::sleep(due.saturating_duration_since(Instant::now()));
         Ok(())
     }
+}
+
+/// What the measuring sink heard.
+#[derive(Default)]
+struct Meter {
+    squares: f64,
+    samples: u64,
+    /// How often the player stopped the output, as it does between tracks
+    /// that do not run into each other.
+    stops: u32,
+}
+
+impl Meter {
+    fn level_db(&self) -> f64 {
+        10.0 * (self.squares / self.samples.max(1) as f64).log10()
+    }
+}
+
+/// A silent sink that measures what passes through it.
+struct Metered {
+    silence: Silence,
+    meter: Arc<std::sync::Mutex<Meter>>,
+}
+
+impl Sink for Metered {
+    fn stop(&mut self) -> SinkResult<()> {
+        if let Ok(mut meter) = self.meter.lock() {
+            meter.stops += 1;
+        }
+        self.silence.stop()
+    }
+
+    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+        if let (Ok(samples), Ok(mut meter)) = (packet.samples(), self.meter.lock()) {
+            meter.squares += samples.iter().map(|sample| sample * sample).sum::<f64>();
+            meter.samples += samples.len() as u64;
+        }
+        self.silence.write(packet, converter)
+    }
+}
+
+/// Checks the playback settings by ear, as it were: the loudness of each
+/// volume level, whether gapless playback keeps the output running from
+/// one track to the next, and whether autoplay goes on after an album.
+async fn options_test(base: Config) -> Fallible<()> {
+    // Random Access Memories: Instant Crush, Lose Yourself to Dance and
+    // the last track, Contact.
+    let album = Id::from_base62("4m2880jivSbbyEGAKfITCa")?;
+    let uri = Kind::Album.uri(album);
+
+    let connect = |config: Config| async move {
+        let meter = Arc::new(std::sync::Mutex::new(Meter::default()));
+        let sink_meter = meter.clone();
+        let config = Config {
+            sink: Some(Arc::new(move || {
+                Box::new(Metered {
+                    silence: Silence::default(),
+                    meter: sink_meter.clone(),
+                })
+            })),
+            ..config
+        };
+        let (engine, events) = Engine::connect(config).await?;
+        Ok::<_, Box<dyn std::error::Error>>((engine, events, meter))
+    };
+    /// Waits until playback is a second in.
+    async fn started(events: &mut Events) -> Option<Event> {
+        wait_for(
+            events,
+            15,
+            |event| matches!(event, Event::Position(position) if *position > 1_000),
+        )
+        .await
+    }
+    // Waits for an event, at most `seconds`.
+    async fn wait_for(
+        events: &mut Events,
+        seconds: u64,
+        mut wanted: impl FnMut(&Event) -> bool,
+    ) -> Option<Event> {
+        let deadline = tokio::time::sleep(Duration::from_secs(seconds));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => return None,
+                event = events.recv() => match event {
+                    Some(event) if wanted(&event) => return Some(event),
+                    Some(_) => {}
+                    None => return None,
+                },
+            }
+        }
+    }
+
+    let tracks = {
+        let (engine, _, _) = connect(base.clone()).await?;
+        engine.api().album(album).await?.tracks
+    };
+
+    println!("-- loudness of Instant Crush from 1:00, normalised");
+    for level in [VolumeLevel::Quiet, VolumeLevel::Normal, VolumeLevel::Loud] {
+        let (engine, mut events, meter) = connect(Config {
+            normalise: true,
+            volume_level: level,
+            ..base.clone()
+        })
+        .await?;
+        engine.play_context(&uri, Start::Index(1), false, Repeat::Off)?;
+        started(&mut events).await.ok_or("did not start")?;
+        engine.seek(60_000)?;
+        wait_for(
+            &mut events,
+            10,
+            |event| matches!(event, Event::Position(position) if *position > 61_000),
+        )
+        .await;
+        *meter.lock().map_err(|_| "poisoned")? = Meter::default();
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        let level_db = meter.lock().map_err(|_| "poisoned")?.level_db();
+        println!("{level:?}: {level_db:.1} dB");
+    }
+
+    println!("-- from the end of Give Life Back to Music into The Game of Love");
+    for gapless in [true, false] {
+        let (engine, mut events, meter) = connect(Config {
+            gapless,
+            ..base.clone()
+        })
+        .await?;
+        engine.play_context(&uri, Start::Index(0), false, Repeat::Off)?;
+        started(&mut events).await.ok_or("did not start")?;
+        engine.seek(tracks[0].duration_ms.saturating_sub(4_000))?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        meter.lock().map_err(|_| "poisoned")?.stops = 0;
+        let next = ItemRef::track(tracks[1].id);
+        let reached = wait_for(&mut events, 15, |event| *event == Event::Item(next)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let stops = meter.lock().map_err(|_| "poisoned")?.stops;
+        println!(
+            "gapless {gapless}: next track {}, output stopped {stops} times",
+            reached.is_some()
+        );
+    }
+
+    println!("-- after the album's last track");
+    let last = tracks.len() as u32 - 1;
+    for autoplay in [true, false] {
+        let (engine, mut events, _) = connect(Config {
+            autoplay,
+            ..base.clone()
+        })
+        .await?;
+        engine.play_context(&uri, Start::Index(last), false, Repeat::Off)?;
+        started(&mut events).await.ok_or("did not start")?;
+        engine.seek(tracks[last as usize].duration_ms.saturating_sub(3_000))?;
+        let ended = wait_for(&mut events, 20, |event| {
+            matches!(event, Event::Stopped)
+                || matches!(event, Event::Item(item) if item.id != tracks[last as usize].id)
+        })
+        .await;
+        println!("autoplay {autoplay}: then {ended:?}");
+    }
+    Ok(())
 }
 
 /// Every few seconds acts on whatever another device is playing: pauses and
