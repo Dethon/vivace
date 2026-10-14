@@ -14,7 +14,6 @@ const SEARCH: Query = Query {
     name: "searchDesktop",
     hash: "eef7cc54888d91bdd6802623477873caa3948ae173a0c34fd86827b267e94c03",
 };
-const RESULTS_PER_KIND: u32 = 10;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,11 +30,12 @@ struct Variables<'a> {
 }
 
 impl Api {
-    pub async fn search(&self, query: &str) -> Result<SearchResults> {
+    /// Searches the catalogue, returning at most `limit` results of each kind.
+    pub async fn search(&self, query: &str, limit: u32) -> Result<SearchResults> {
         let variables = Variables {
             search_term: query,
             offset: 0,
-            limit: RESULTS_PER_KIND,
+            limit,
             number_of_top_results: 5,
             include_audiobooks: true,
             include_artist_has_concerts_field: false,

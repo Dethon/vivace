@@ -317,7 +317,7 @@ async fn run() -> Fallible<()> {
             }
         }
         ["search", query] => {
-            let results = api.search(query).await?;
+            let results = api.search(query, 10).await?;
             print_tracks(&results.tracks);
             for artist in &results.artists {
                 println!(

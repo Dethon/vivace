@@ -202,6 +202,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         ),
         (
+            "5b-all-albums",
+            4000,
+            Box::new(|ui| {
+                let rows = ui.global::<Nav>().get_rows();
+                let title = rows
+                    .iter()
+                    .position(|row| row.kind == RowKind::Section && row.text == "Albums");
+                match title {
+                    Some(row) => ui.global::<Nav>().invoke_open_section(row as i32),
+                    None => println!("no albums among the results"),
+                }
+            }),
+        ),
+        (
+            "5c-back",
+            1500,
+            Box::new(|ui| ui.global::<Nav>().invoke_back()),
+        ),
+        (
             "6-artist",
             4000,
             Box::new(move |ui| {

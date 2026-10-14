@@ -383,6 +383,14 @@ impl App {
                 }
             }
         });
+        nav.on_open_section({
+            let app = Rc::downgrade(self);
+            move |row| {
+                if let Some(app) = app.upgrade() {
+                    app.open_section(row as usize);
+                }
+            }
+        });
         nav.on_columns_changed({
             let app = Rc::downgrade(self);
             move |columns| {
@@ -1226,7 +1234,7 @@ impl App {
             nav.set_loading(!is_cached);
             // The search field mirrors the page: empty away from results.
             let query = match &page {
-                Page::Search(query) => query.as_str(),
+                Page::Search(query) | Page::SearchAll(query, _) => query.as_str(),
                 _ => "",
             };
             if nav.get_query() != query {
@@ -1337,6 +1345,22 @@ impl App {
         };
         if let Some(page) = page {
             self.open(page);
+        }
+    }
+
+    /// Opens the page a section's "Show all" link leads to.
+    fn open_section(&self, row: usize) {
+        let target = {
+            let state = self.state.borrow();
+            let (Some(page), Some(&RowSource::Title { section })) =
+                (&state.page, state.layout.get(row))
+            else {
+                return;
+            };
+            section_more(&page.sections[section]).cloned()
+        };
+        if let Some(target) = target {
+            self.open(target);
         }
     }
 
@@ -1784,6 +1808,11 @@ impl App {
                     Section::Cards(cards) => cards.title.as_str().into(),
                     Section::Message(_) => SharedString::default(),
                 },
+                link: if section_more(&page.sections[section]).is_some() {
+                    "Show all".into()
+                } else {
+                    SharedString::default()
+                },
                 ..Row::default()
             },
             RowSource::Columns { section } => {
@@ -2079,5 +2108,14 @@ fn emblem(emblem: Option<Emblem>) -> EmblemKind {
         None => EmblemKind::None,
         Some(Emblem::LikedSongs) => EmblemKind::LikedSongs,
         Some(Emblem::YourEpisodes) => EmblemKind::YourEpisodes,
+    }
+}
+
+/// Where a section's "Show all" link leads, if it has one.
+fn section_more(section: &Section) -> Option<&Page> {
+    match section {
+        Section::Tracks(tracks) => tracks.more.as_ref(),
+        Section::Cards(cards) => cards.more.as_ref(),
+        Section::Message(_) => None,
     }
 }

@@ -55,6 +55,8 @@ export struct Row {
     kind: RowKind,
     // A section's title, a message, or the heading of a list's date column.
     text: string,
+    // A section's "Show all" link; empty for none.
+    link: string,
     // Whether the track list this row belongs to shows a "Date added" column.
     dated: bool,
     // The list is a single album: no artwork or album column per track.
@@ -158,6 +160,8 @@ export global Nav {
     callback add-to-playlist(int, int);
     // Row index and position of the card within it.
     callback open-card(int, int);
+    // Follows the "Show all" link of the section titled in a row.
+    callback open-section(int);
     // How many cards fit in a row at the current width.
     callback columns-changed(int);
 }

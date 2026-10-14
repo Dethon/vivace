@@ -486,6 +486,41 @@ component TrackRow inherits Rectangle {
     }
 }
 
+component SectionTitle inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> link;
+    callback clicked();
+
+    spacing: 16px;
+    height: 32px;
+
+    Text {
+        text: root.title;
+        color: Theme.text;
+        font-size: 22px;
+        font-weight: 700;
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-stretch: 1;
+    }
+
+    if root.link != "": Text {
+        text: root.link;
+        color: link-touch.has-hover ? Theme.text : Theme.text-muted;
+        font-size: 14px;
+        font-weight: 700;
+        vertical-alignment: center;
+        horizontal-stretch: 0;
+
+        link-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.clicked();
+            }
+        }
+    }
+}
+
 component Card inherits Rectangle {
     in property <CardData> data;
     callback clicked();
@@ -584,15 +619,15 @@ export component PageView inherits Rectangle {
                 data: row.header;
             }
 
-            if row.kind == RowKind.section: Text {
+            if row.kind == RowKind.section: SectionTitle {
                 x: Theme.gutter;
                 y: 24px;
                 width: parent.width - 2 * Theme.gutter;
-                text: row.text;
-                color: Theme.text;
-                font-size: 22px;
-                font-weight: 700;
-                overflow: elide;
+                title: row.text;
+                link: row.link;
+                clicked => {
+                    Nav.open-section(index);
+                }
             }
 
             if row.kind == RowKind.columns: ColumnsRow {

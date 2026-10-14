@@ -9,6 +9,9 @@ use crate::format;
 
 // Tracks listed on a search page and as an artist's most popular.
 const SEARCH_TRACKS: usize = 6;
+// Results of each kind a search asks for, and those a "Show all" page lists.
+const SEARCH_RESULTS: u32 = 10;
+const SEARCH_ALL_RESULTS: u32 = 50;
 const POPULAR_TRACKS: usize = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -20,9 +23,33 @@ pub enum Page {
     Album(Id),
     Artist(Id),
     Search(String),
+    /// Every result of one kind for a search.
+    SearchAll(String, SearchKind),
     Show(Id),
     /// The settings screen, which has no content to fetch.
     Settings,
+}
+
+/// A kind of search result, each with its own section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchKind {
+    Songs,
+    Artists,
+    Albums,
+    Playlists,
+    Podcasts,
+}
+
+impl SearchKind {
+    fn title(self) -> &'static str {
+        match self {
+            SearchKind::Songs => "Songs",
+            SearchKind::Artists => "Artists",
+            SearchKind::Albums => "Albums",
+            SearchKind::Playlists => "Playlists",
+            SearchKind::Podcasts => "Podcasts",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +112,8 @@ pub enum Section {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSection {
     pub title: Option<&'static str>,
+    /// A page with the rest, offered as "Show all".
+    pub more: Option<Page>,
     pub tracks: Vec<TrackEntry>,
     /// Which date, if any, each row shows.
     pub dates: Dates,
@@ -122,6 +151,8 @@ pub struct TrackEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardSection {
     pub title: String,
+    /// A page with the rest, offered as "Show all".
+    pub more: Option<Page>,
     pub cards: Vec<Card>,
     /// Whether to show every card over several rows rather than one row.
     pub wrap: bool,
@@ -148,6 +179,7 @@ impl Page {
             Page::Album(id) => album(api, *id).await,
             Page::Artist(id) => artist(api, *id).await,
             Page::Search(query) => search(api, query).await,
+            Page::SearchAll(query, kind) => search_all(api, query, *kind).await,
             Page::Show(id) => show(api, *id).await,
             Page::Settings => Ok(PageData {
                 header: None,
@@ -372,6 +404,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
     if !details.top_tracks.is_empty() {
         sections.push(Section::Tracks(TrackSection {
             title: Some("Popular"),
+            more: None,
             tracks: details
                 .top_tracks
                 .into_iter()
@@ -454,12 +487,14 @@ async fn show(api: &Api, id: Id) -> Result<PageData> {
 }
 
 async fn search(api: &Api, query: &str) -> Result<PageData> {
-    let results = api.search(query).await?;
+    let results = api.search(query, SEARCH_RESULTS).await?;
+    let more = |kind| Some(Page::SearchAll(query.into(), kind));
 
     let mut sections = Vec::new();
     if !results.tracks.is_empty() {
         sections.push(Section::Tracks(TrackSection {
-            title: Some("Songs"),
+            title: Some(SearchKind::Songs.title()),
+            more: more(SearchKind::Songs),
             tracks: results
                 .tracks
                 .into_iter()
@@ -470,30 +505,67 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
             album_view: false,
         }));
     }
-    push_cards(
-        &mut sections,
-        "Artists",
-        false,
-        results.artists.iter().map(artist_card),
-    );
-    push_cards(
-        &mut sections,
-        "Albums",
-        false,
-        results.albums.iter().map(album_card),
-    );
-    push_cards(
-        &mut sections,
-        "Playlists",
-        false,
-        results.playlists.iter().map(playlist_card),
-    );
-    push_cards(
-        &mut sections,
-        "Podcasts",
-        false,
-        results.shows.iter().map(show_card),
-    );
+    let kinds = [
+        (
+            SearchKind::Artists,
+            results.artists.iter().map(artist_card).collect::<Vec<_>>(),
+        ),
+        (
+            SearchKind::Albums,
+            results.albums.iter().map(album_card).collect(),
+        ),
+        (
+            SearchKind::Playlists,
+            results.playlists.iter().map(playlist_card).collect(),
+        ),
+        (
+            SearchKind::Podcasts,
+            results.shows.iter().map(show_card).collect(),
+        ),
+    ];
+    for (kind, cards) in kinds {
+        push_more_cards(
+            &mut sections,
+            kind.title(),
+            false,
+            cards.into_iter(),
+            more(kind),
+        );
+    }
+    if sections.is_empty() {
+        sections.push(Section::Message(format!("No results for “{query}”")));
+    }
+
+    Ok(PageData {
+        header: None,
+        context: None,
+        sections,
+    })
+}
+
+/// Every result of one kind, as many as a search returns at once.
+async fn search_all(api: &Api, query: &str, kind: SearchKind) -> Result<PageData> {
+    let results = api.search(query, SEARCH_ALL_RESULTS).await?;
+    let mut sections = Vec::new();
+    let cards: Vec<Card> = match kind {
+        SearchKind::Songs => {
+            if !results.tracks.is_empty() {
+                sections.push(Section::Tracks(TrackSection {
+                    title: Some(kind.title()),
+                    more: None,
+                    tracks: results.tracks.into_iter().map(undated).collect(),
+                    dates: Dates::None,
+                    album_view: false,
+                }));
+            }
+            Vec::new()
+        }
+        SearchKind::Artists => results.artists.iter().map(artist_card).collect(),
+        SearchKind::Albums => results.albums.iter().map(album_card).collect(),
+        SearchKind::Playlists => results.playlists.iter().map(playlist_card).collect(),
+        SearchKind::Podcasts => results.shows.iter().map(show_card).collect(),
+    };
+    push_cards(&mut sections, kind.title(), true, cards.into_iter());
     if sections.is_empty() {
         sections.push(Section::Message(format!("No results for “{query}”")));
     }
@@ -511,6 +583,7 @@ fn track_list(tracks: Vec<TrackEntry>, dates: Dates, album_view: bool, empty: &s
     } else {
         Section::Tracks(TrackSection {
             title: None,
+            more: None,
             tracks,
             dates,
             album_view,
@@ -528,10 +601,22 @@ fn push_cards(
     wrap: bool,
     cards: impl Iterator<Item = Card>,
 ) {
+    push_more_cards(sections, title, wrap, cards, None);
+}
+
+/// Adds a section of cards, if there are any, that may offer "Show all".
+fn push_more_cards(
+    sections: &mut Vec<Section>,
+    title: &str,
+    wrap: bool,
+    cards: impl Iterator<Item = Card>,
+    more: Option<Page>,
+) {
     let cards: Vec<Card> = cards.collect();
     if !cards.is_empty() {
         sections.push(Section::Cards(CardSection {
             title: title.into(),
+            more,
             cards,
             wrap,
         }));
