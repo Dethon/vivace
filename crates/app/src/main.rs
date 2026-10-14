@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::rc::Rc;
+
 use slint::{CloseRequestResponse, ComponentHandle, LogicalSize};
 use vivace::{App, MainWindow, Settings, WindowState};
 
@@ -27,9 +29,14 @@ fn main() -> Result<(), slint::PlatformError> {
 
     ui.window().on_close_requested({
         let ui = ui.as_weak();
+        let app = Rc::downgrade(&app);
         move || {
             if let Some(ui) = ui.upgrade() {
                 remember_window(ui.window());
+            }
+            // With the tray icon the app keeps playing; without, it ends.
+            if !app.upgrade().is_some_and(|app| app.keeps_running_in_tray()) {
+                _ = slint::quit_event_loop();
             }
             CloseRequestResponse::HideWindow
         }
@@ -39,10 +46,14 @@ fn main() -> Result<(), slint::PlatformError> {
     // Opened by the login entry: out of the way until wanted.
     if std::env::args().any(|argument| argument == vivace::BACKGROUND_FLAG) {
         ui.window().set_minimized(true);
+        if app.keeps_running_in_tray() {
+            app.start_in_tray();
+        }
     }
     vivace::refresh_login_entry();
     app.attach_media_keys();
-    slint::run_event_loop()?;
+    // Runs until quit, as the window may be closed to the tray meanwhile.
+    slint::run_event_loop_until_quit()?;
     ui.hide()?;
     app.quit();
     Ok(())

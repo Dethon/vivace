@@ -182,6 +182,9 @@ export global SettingsView {
     in property <bool> normalise;
     in property <string> device-name;
     in property <bool> start-at-login;
+    // Whether this system has a tray to close the window to.
+    in property <bool> tray-supported;
+    in property <bool> close-to-tray;
     in property <string> username;
     in property <string> version;
     in property <string> data-folder;
@@ -189,6 +192,7 @@ export global SettingsView {
     callback set-normalise(bool);
     callback set-device-name(string);
     callback set-start-at-login(bool);
+    callback set-close-to-tray(bool);
     callback sign-out();
 }
 

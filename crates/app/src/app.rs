@@ -24,6 +24,7 @@ use crate::{
     models::LazyModel,
     settings::Settings,
     system,
+    tray::{self, Tray},
 };
 
 /// Library entries above the playlists: Liked Songs and Your Episodes.
@@ -52,6 +53,11 @@ pub struct App {
     /// For services that report to the app from other threads.
     updates: UnboundedSender<Update>,
     media: RefCell<Option<MediaKeys>>,
+    /// The notification-area icon, while closing the window keeps the app running.
+    tray: RefCell<Option<Tray>>,
+    /// Hide the window once media keys are attached: the app started at
+    /// login with the window closed to the tray.
+    start_hidden: Cell<bool>,
     images: Images,
     rows: Rc<LazyModel<Row>>,
     library: Rc<LazyModel<LibraryItem>>,
@@ -199,6 +205,8 @@ impl App {
             images: Images::new(requests.clone()),
             updates,
             media: RefCell::new(None),
+            tray: RefCell::new(None),
+            start_hidden: Cell::new(false),
             requests,
             backend_finished,
             rows: Rc::new(LazyModel::new(with(app, Self::row))),
@@ -268,6 +276,46 @@ impl App {
         }
     }
 
+    /// Whether closing the window should leave the app running.
+    pub fn keeps_running_in_tray(&self) -> bool {
+        self.tray.borrow().is_some()
+    }
+
+    /// Hides the window as soon as media keys are attached, which needs it
+    /// on screen; for a start at login with the window closed to the tray.
+    pub fn start_in_tray(&self) {
+        self.start_hidden.set(true);
+    }
+
+    /// Puts the icon in the notification area, or takes it away.
+    fn set_tray(&self, on: bool) {
+        if !on {
+            self.tray.borrow_mut().take();
+            return;
+        }
+        if self.tray.borrow().is_some() {
+            return;
+        }
+        let Some(ui) = self.ui.upgrade() else { return };
+        match Tray::new(&ui) {
+            Ok(icon) => {
+                *self.tray.borrow_mut() = Some(icon);
+                self.update_tray_tooltip();
+            }
+            Err(error) => log::warn!("couldn't add the tray icon: {error}"),
+        }
+    }
+
+    fn update_tray_tooltip(&self) {
+        let tray = self.tray.borrow();
+        let Some(tray) = tray.as_ref() else { return };
+        let state = self.state.borrow();
+        match &state.now_playing {
+            Some(track) => tray.set_tooltip(&format!("{} · {}", track.name, artist_names(track))),
+            None => tray.set_tooltip("Vivace"),
+        }
+    }
+
     pub fn attach_media_keys(self: &Rc<Self>) {
         let app = Rc::downgrade(self);
         let mut attempts = 0;
@@ -282,6 +330,11 @@ impl App {
                     Attach::WindowNotReady | Attach::Unavailable => {}
                 }
                 app.media_timer.stop();
+                if app.start_hidden.take()
+                    && let Err(error) = ui.hide()
+                {
+                    log::warn!("couldn't hide the window: {error}");
+                }
             });
     }
 
@@ -345,6 +398,15 @@ impl App {
                     ui.global::<SettingsView>()
                         .set_start_at_login(system::starts_at_login())
                 });
+            }
+        });
+        settings.set_tray_supported(tray::SUPPORTED);
+        settings.on_set_close_to_tray({
+            let app = Rc::downgrade(self);
+            move |on| {
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.close_to_tray = on);
+                }
             }
         });
         settings.on_sign_out(self.handler(Self::ask_to_sign_out));
@@ -902,6 +964,7 @@ impl App {
                     .get(track.cover.as_ref(), self.shape(PLAYER_COVER, false)),
             );
         });
+        self.update_tray_tooltip();
         // A local track starts from the top; another device says where it is.
         if !remote {
             self.show_position(0);
@@ -1590,6 +1653,7 @@ impl App {
     }
 
     fn show_settings(&self, settings: &Settings) {
+        self.set_tray(settings.close_to_tray && tray::SUPPORTED);
         self.with_ui(|ui| {
             let view = ui.global::<SettingsView>();
             view.set_quality(match settings.quality {
@@ -1600,6 +1664,7 @@ impl App {
             view.set_normalise(settings.normalise);
             view.set_device_name(settings.device_name().into());
             view.set_start_at_login(system::starts_at_login());
+            view.set_close_to_tray(settings.close_to_tray && tray::SUPPORTED);
         });
     }
 

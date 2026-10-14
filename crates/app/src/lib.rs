@@ -10,6 +10,7 @@ mod media;
 mod models;
 mod settings;
 pub mod system;
+mod tray;
 
 slint::include_modules!();
 

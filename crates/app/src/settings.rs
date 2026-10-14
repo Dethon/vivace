@@ -20,6 +20,8 @@ pub struct Settings {
     /// one; see [`Settings::device_name`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    /// Closing the window leaves the app running in the tray, where there is one.
+    pub close_to_tray: bool,
 }
 
 /// The window's size in logical pixels. Its position is not kept: a saved
@@ -120,6 +122,7 @@ mod tests {
             quality: Quality::Normal,
             normalise: true,
             device_name: Some("Study".into()),
+            close_to_tray: true,
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), settings);

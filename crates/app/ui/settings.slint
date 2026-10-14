@@ -210,6 +210,22 @@ export component SettingsPage inherits Rectangle {
                 }
             }
 
+            if SettingsView.tray-supported: Setting {
+                title: "Keep Vivace in the notification area";
+                detail: "Closing the window leaves Vivace playing, with its icon by the clock.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.close-to-tray;
+                        toggled => {
+                            SettingsView.set-close-to-tray(!SettingsView.close-to-tray);
+                        }
+                    }
+                }
+            }
+
             SectionTitle {
                 text: "Account";
             }
