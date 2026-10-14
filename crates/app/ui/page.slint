@@ -238,6 +238,13 @@ component TrackRow inherits Rectangle {
                 }
             }
 
+            if root.data.episode: MenuItem {
+                title: root.data.played ? "Mark as unplayed" : "Mark as played";
+                activated => {
+                    root.action(TrackAction.toggle-played);
+                }
+            }
+
             if Nav.page-editable: MenuItem {
                 title: "Remove from this playlist";
                 activated => {

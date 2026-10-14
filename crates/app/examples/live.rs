@@ -357,6 +357,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             1500,
             Box::new(|ui| ui.global::<Player>().invoke_toggle()),
         ));
+        // Marks the next episode played and unplayed again.
+        steps.push((
+            "p4b-marked-played",
+            2500,
+            Box::new(move |ui| {
+                let row = first_row(ui, RowKind::Track) + 1;
+                ui.global::<Nav>()
+                    .invoke_track_action(row, TrackAction::TogglePlayed);
+            }),
+        ));
+        steps.push((
+            "p4c-marked-unplayed",
+            2500,
+            Box::new(move |ui| {
+                let row = first_row(ui, RowKind::Track) + 1;
+                ui.global::<Nav>()
+                    .invoke_track_action(row, TrackAction::TogglePlayed);
+            }),
+        ));
         // Saves the episode to Your Episodes, where it comes first, and takes
         // it out again from there.
         steps.push((

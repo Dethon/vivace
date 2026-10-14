@@ -86,6 +86,11 @@ pub enum Request {
     },
     /// How far the user got in an episode.
     EpisodeProgress(Id),
+    /// Marks an episode played or unplayed.
+    SetProgress {
+        episode: Id,
+        progress: Progress,
+    },
     /// Records the playing episode's position and ends the session, for
     /// closing the app.
     Quit,
@@ -325,6 +330,19 @@ impl Session {
         let result = match request {
             // These end the session and are taken by `serve` before this.
             Request::Configure(_) | Request::SignOut | Request::Quit => Ok(()),
+            Request::SetProgress { episode, progress } => {
+                let updates = self.updates.clone();
+                self.spawn(move |api, _| async move {
+                    let error = api.set_episode_progress(episode, progress).await.err()?;
+                    _ = updates.send(Update::Notice(format!(
+                        "Couldn't mark the episode: {error}"
+                    )));
+                    // Shows the episode as Spotify still has it.
+                    let progress = api.episode_progress(episode).await.ok()?;
+                    Some(Update::EpisodeProgress { episode, progress })
+                });
+                Ok(())
+            }
             Request::EpisodeProgress(episode) => {
                 self.spawn(move |api, _| async move {
                     match api.episode_progress(episode).await {

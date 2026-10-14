@@ -1452,6 +1452,22 @@ impl App {
         };
         match action {
             TrackAction::ToggleLiked => self.toggle_saved(saveable(&track)),
+            TrackAction::TogglePlayed if track.is_episode() => {
+                let played = self.episode_progress(track.id) == Some(Progress::Completed);
+                let progress = if played {
+                    Progress::NotStarted
+                } else {
+                    Progress::Completed
+                };
+                // Shown at once; the backend corrects it if Spotify refuses.
+                self.progress.borrow_mut().insert(track.id, Some(progress));
+                self.refresh_track(track.id);
+                self.request(Request::SetProgress {
+                    episode: track.id,
+                    progress,
+                });
+            }
+            TrackAction::TogglePlayed => {}
             TrackAction::AddToQueue => self.request(Request::AddToQueue(track.item())),
             TrackAction::OpenAlbum => self.open(album_page(&track)),
             TrackAction::OpenArtist => {
