@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sink: Some(Arc::new(|| Box::new(Silence::default()))),
         ..Config::default()
     };
-    let _app = App::start(&ui, config)?;
+    let app = App::start(&ui, config)?;
     ui.show()?;
 
     // Each step runs its action, waits, then is photographed.
@@ -380,6 +380,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .invoke_track_action(first_row(ui, RowKind::Track), TrackAction::ToggleLiked);
             }),
         ));
+        // Plays on, so closing has a position to record.
+        steps.push((
+            "p8-resumed",
+            5000,
+            Box::new(|ui| ui.global::<Player>().invoke_toggle()),
+        ));
     }
 
     // Changes a setting, which reconnects, and then signs out. Signing in
@@ -467,5 +473,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(1), tick);
 
     slint::run_event_loop()?;
+    // Closes as the app does, recording where an episode was left.
+    let closing = std::time::Instant::now();
+    app.quit();
+    println!("closed in {:?}", closing.elapsed());
     Ok(())
 }

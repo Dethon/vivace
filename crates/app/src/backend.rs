@@ -283,8 +283,12 @@ impl Session {
                         self.engine.save_progress().await;
                         return Ended::Closed;
                     }
-                    Some(Request::Configure(config)) => return Ended::Restart(Some(config)),
+                    Some(Request::Configure(config)) => {
+                        self.engine.save_progress().await;
+                        return Ended::Restart(Some(config));
+                    }
                     Some(Request::SignOut) => {
+                        self.engine.save_progress().await;
                         // Keyring backends block.
                         _ = tokio::task::spawn_blocking(vivace_core::sign_out).await;
                         self.send(Update::SignedOut);
