@@ -114,3 +114,26 @@ pub fn sign_out() {
 fn keyring_entry() -> Option<keyring::Entry> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok()
 }
+
+const DEVICE_ID_FILE: &str = "device-id";
+
+/// The id this computer has in Spotify Connect, kept across runs so it
+/// stays one device in Spotify's lists. The first run stores `fresh`.
+/// Returns `None` when the data directory is unusable, in which case the
+/// session keeps its fresh id.
+pub(crate) fn device_id(fresh: &str) -> Option<String> {
+    let path = data_dir().ok()?.join(DEVICE_ID_FILE);
+    if let Ok(stored) = std::fs::read_to_string(&path) {
+        let stored = stored.trim();
+        if !stored.is_empty() {
+            return Some(stored.to_owned());
+        }
+    }
+    match std::fs::write(&path, fresh) {
+        Ok(()) => Some(fresh.to_owned()),
+        Err(error) => {
+            log::warn!("couldn't keep the device id in {}: {error}", path.display());
+            None
+        }
+    }
+}

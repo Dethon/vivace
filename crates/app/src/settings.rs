@@ -72,6 +72,7 @@ impl Settings {
             device_name: self.device_name.clone(),
             quality: self.quality,
             normalise: self.normalise,
+            persistent_device: true,
             sink: None,
         }
     }

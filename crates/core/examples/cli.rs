@@ -41,7 +41,11 @@ async fn run() -> Fallible<()> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut config = Config::default();
+    // A device of its own, so it can run next to the app and other copies.
+    let mut config = Config {
+        persistent_device: false,
+        ..Config::default()
+    };
     if args.first() == Some(&"silent") {
         args.remove(0);
         config.sink = Some(Arc::new(|| Box::new(Silence::default())));

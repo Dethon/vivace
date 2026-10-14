@@ -58,6 +58,9 @@ pub struct Config {
     pub quality: Quality,
     /// Even out loudness between tracks.
     pub normalise: bool,
+    /// Keep the same Connect device id across runs. Tools that run next to
+    /// the app turn this off so they show up as a device of their own.
+    pub persistent_device: bool,
     /// Replaces the system's default audio output, e.g. to discard audio in tools.
     pub sink: Option<SinkFactory>,
 }
@@ -72,6 +75,7 @@ impl Default for Config {
             device_name: Self::DEFAULT_DEVICE_NAME.into(),
             quality: Quality::default(),
             normalise: false,
+            persistent_device: true,
             sink: None,
         }
     }
@@ -180,7 +184,13 @@ impl Engine {
         credentials: Credentials,
     ) -> Result<(Self, Events)> {
         let initial_volume = cache.volume().unwrap_or(DEFAULT_VOLUME);
-        let session = Session::new(SessionConfig::default(), Some(cache));
+        let mut session_config = SessionConfig::default();
+        if config.persistent_device
+            && let Some(device_id) = auth::device_id(&session_config.device_id)
+        {
+            session_config.device_id = device_id;
+        }
+        let session = Session::new(session_config, Some(cache));
 
         let mixer = mixer::find(None).ok_or(crate::Error::NoAudioBackend)?(MixerConfig::default())?;
         let player_config = PlayerConfig {
