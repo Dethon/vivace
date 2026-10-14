@@ -10,6 +10,7 @@ mod library;
 mod lyrics;
 mod playlists;
 mod remote;
+mod resumption;
 mod search;
 mod transport;
 

@@ -38,7 +38,9 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.show()?;
     app.attach_media_keys();
     slint::run_event_loop()?;
-    ui.hide()
+    ui.hide()?;
+    app.quit();
+    Ok(())
 }
 
 fn remember_window(window: &slint::Window) {

@@ -15,6 +15,16 @@ pub fn duration(ms: u32) -> String {
     }
 }
 
+/// `41 min left` or `1 hr 5 min left`; a part-started minute counts whole.
+pub fn time_left(ms: u32) -> String {
+    let minutes = ms.div_ceil(60_000).max(1);
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min left"),
+        (hours, 0) => format!("{hours} hr left"),
+        (hours, minutes) => format!("{hours} hr {minutes} min left"),
+    }
+}
+
 /// `Oct 3, 2026` for a Unix timestamp in seconds; empty when unknown.
 pub fn date(unix_seconds: i64) -> String {
     if unix_seconds <= 0 {
@@ -52,6 +62,14 @@ mod tests {
         assert_eq!(duration(0), "0:00");
         assert_eq!(duration(187_999), "3:07");
         assert_eq!(duration(3_727_000), "1:02:07");
+    }
+
+    #[test]
+    fn formats_time_left() {
+        assert_eq!(time_left(1), "1 min left");
+        assert_eq!(time_left(41 * 60_000 - 500), "41 min left");
+        assert_eq!(time_left(60 * 60_000), "1 hr left");
+        assert_eq!(time_left(80 * 60_000 + 1), "1 hr 21 min left");
     }
 
     #[test]

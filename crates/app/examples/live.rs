@@ -8,7 +8,8 @@
 //! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page,
 //! adds a track to a new playlist, renames that playlist and deletes it. With
 //! `LIVE_NO_PLAYBACK=1` it only browses, leaving other devices undisturbed.
-//! With `LIVE_PODCAST=1` it opens a followed podcast and plays an episode.
+//! With `LIVE_PODCAST=1` it opens a followed podcast, plays its newest
+//! episode from where it was left, and saves it to Your Episodes and back.
 //! With `LIVE_SETTINGS=1` it changes settings and signs out; afterwards the
 //! saved login is gone, so keep a copy of it to restore.
 
@@ -344,10 +345,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         steps.push((
             "p3-episode-playing",
             7000,
-            Box::new(move |ui| {
+            // The header's play button, which starts the newest episode
+            // where it was left.
+            Box::new(|ui| {
                 ui.global::<Queue>().set_visible(true);
-                ui.global::<Nav>()
-                    .invoke_play_track(first_row(ui, RowKind::Track));
+                ui.global::<Nav>().invoke_play_page();
             }),
         ));
         steps.push((

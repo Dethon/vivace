@@ -9,7 +9,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Config, Connect, Device, DeviceKind, Playback, Quality, Repeat, Start,
-    model::{Id, Image, Lyrics, Playlist, Track},
+    model::{Id, Image, Lyrics, Playlist, Progress, Track},
 };
 
 use crate::{
@@ -27,6 +27,8 @@ use crate::{
 
 /// Library entries above the playlists: Liked Songs and Your Episodes.
 const COLLECTIONS: usize = 2;
+/// How long closing waits for the backend to record where an episode was left.
+const QUIT_TIMEOUT: Duration = Duration::from_secs(3);
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const NOTICE_DURATION: Duration = Duration::from_secs(4);
 const MEDIA_ATTACH_INTERVAL: Duration = Duration::from_millis(250);
@@ -44,6 +46,8 @@ const HEADER_COVER: u32 = 192;
 pub struct App {
     ui: slint::Weak<MainWindow>,
     requests: UnboundedSender<Request>,
+    /// Says when the backend thread has finished.
+    backend_finished: std::sync::mpsc::Receiver<()>,
     /// For services that report to the app from other threads.
     updates: UnboundedSender<Update>,
     media: RefCell<Option<MediaKeys>>,
@@ -55,6 +59,9 @@ pub struct App {
     /// Stand-in artwork for playlists without a picture; `None` while it is
     /// being fetched or when there is none.
     playlist_covers: RefCell<HashMap<Id, Option<Image>>>,
+    /// How far the user got in the episodes shown; `None` while it is being
+    /// looked up. Forgotten when another page opens, so it stays current.
+    progress: RefCell<HashMap<Id, Option<Progress>>>,
     search_timer: Timer,
     media_timer: Timer,
     /// Advances the position shown for another device's playback.
@@ -184,7 +191,7 @@ impl App {
     /// Wires the window to a freshly started backend and opens the home page.
     pub fn start(ui: &MainWindow, config: Config) -> Result<Rc<Self>, slint::PlatformError> {
         let (updates, receiver) = unbounded_channel();
-        let requests = backend::spawn(config, updates.clone());
+        let (requests, backend_finished) = backend::spawn(config, updates.clone());
 
         let app = Rc::new_cyclic(|app: &Weak<Self>| Self {
             ui: ui.as_weak(),
@@ -192,6 +199,7 @@ impl App {
             updates,
             media: RefCell::new(None),
             requests,
+            backend_finished,
             rows: Rc::new(LazyModel::new(with(app, Self::row))),
             library: Rc::new(LazyModel::new(with(app, Self::library_item))),
             queue: Rc::new(LazyModel::new(with(app, Self::queue_item))),
@@ -225,6 +233,7 @@ impl App {
                 remote: None,
             }),
             playlist_covers: RefCell::default(),
+            progress: RefCell::default(),
             search_timer: Timer::default(),
             media_timer: Timer::default(),
             remote_timer: Timer::default(),
@@ -250,6 +259,14 @@ impl App {
 
     /// Hooks up the media keys once the native window exists, which on
     /// some platforms is shortly after the event loop starts.
+    /// Ends the session, giving it a moment to record where the playing
+    /// episode was left. Call once the window has closed.
+    pub fn quit(&self) {
+        if self.requests.send(Request::Quit).is_ok() {
+            _ = self.backend_finished.recv_timeout(QUIT_TIMEOUT);
+        }
+    }
+
     pub fn attach_media_keys(self: &Rc<Self>) {
         let app = Rc::downgrade(self);
         let mut attempts = 0;
@@ -644,6 +661,10 @@ impl App {
                 self.refresh_cards();
             }
             Update::NowPlaying(track) => self.now_playing(track),
+            Update::EpisodeProgress { episode, progress } => {
+                self.progress.borrow_mut().insert(episode, Some(progress));
+                self.refresh_track(episode);
+            }
             // While another device plays, its state is what the player shows.
             Update::Playback(_) | Update::Position(_) | Update::Stopped | Update::Volume(_)
                 if self.state.borrow().remote.is_some() => {}
@@ -878,6 +899,42 @@ impl App {
         self.with_ui(|ui| ui.global::<Player>().set_position_ms(position_ms as i32));
         self.position_shown.set(Instant::now());
         self.follow_lyrics();
+        self.follow_progress(position_ms);
+    }
+
+    /// Keeps the playing episode's progress current where it is shown.
+    fn follow_progress(&self, position_ms: u32) {
+        let episode = {
+            let state = self.state.borrow();
+            match &state.now_playing {
+                Some(track) if track.is_episode() => track.id,
+                _ => return,
+            }
+        };
+        let shown = {
+            let mut progress = self.progress.borrow_mut();
+            match progress.get_mut(&episode) {
+                Some(known) => {
+                    *known = Some(Progress::InProgress { position_ms });
+                    true
+                }
+                None => false,
+            }
+        };
+        if shown {
+            self.refresh_track(episode);
+        }
+    }
+
+    /// How far the user got in an episode, looked up the first time it is asked for.
+    fn episode_progress(&self, episode: Id) -> Option<Progress> {
+        let mut progress = self.progress.borrow_mut();
+        if let Some(known) = progress.get(&episode) {
+            return *known;
+        }
+        progress.insert(episode, None);
+        self.request(Request::EpisodeProgress(episode));
+        None
     }
 
     /// Fetches the playing track's lyrics if the panel is open and lacks them.
@@ -1134,6 +1191,8 @@ impl App {
 
     /// Shows the current visit: at once if cached, and always refreshed from Spotify.
     fn show_current(&self) {
+        // Episodes may have moved on elsewhere since they were last shown.
+        self.progress.borrow_mut().clear();
         let (page, token, cached, scroll_y, can_go_back, can_go_forward) = {
             let mut state = self.state.borrow_mut();
             state.token += 1;
@@ -1311,12 +1370,21 @@ impl App {
             let Some(page) = state.page.clone() else {
                 return;
             };
+            // A show's context begins with its first episode ever; its page,
+            // like Spotify's apps, starts from the newest.
+            let start = match (state.current_page(), page.sections.first()) {
+                (Page::Show(_), Some(Section::Tracks(episodes))) => episodes
+                    .tracks
+                    .first()
+                    .map_or(Start::Beginning, |entry| Start::Item(entry.track.item())),
+                _ => Start::Beginning,
+            };
             match &page.context {
                 Some(uri) => {
                     state.started = Some((uri.clone(), page_title(&page)));
                     Request::PlayContext {
                         uri: uri.clone(),
-                        start: Start::Beginning,
+                        start,
                         shuffle: state.shuffle,
                         repeat: state.repeat,
                     }
@@ -1772,6 +1840,19 @@ impl App {
     }
 
     fn track_data(&self, state: &State, track: &Track) -> TrackData {
+        let (progress, remaining, played) = match track
+            .is_episode()
+            .then(|| self.episode_progress(track.id))
+            .flatten()
+        {
+            Some(Progress::InProgress { position_ms }) if position_ms < track.duration_ms => (
+                position_ms as f32 / track.duration_ms as f32,
+                format::time_left(track.duration_ms - position_ms).into(),
+                false,
+            ),
+            Some(Progress::Completed) => (0.0, "Played".into(), true),
+            _ => (0.0, SharedString::default(), false),
+        };
         TrackData {
             title: track.name.as_ref().into(),
             artists: artist_names(track).into(),
@@ -1790,6 +1871,9 @@ impl App {
                 .is_some_and(|playing| playing.id == track.id),
             liked: state.is_saved(saveable(track)),
             episode: track.is_episode(),
+            progress,
+            remaining,
+            played,
         }
     }
 

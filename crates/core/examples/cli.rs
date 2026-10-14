@@ -6,6 +6,9 @@
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
+//!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
+//!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
+//!   cli episode-end <episode id>     plays an episode's last seconds, which marks it played
 //!
 //! Put `silent` first to discard audio instead of playing it: `cli silent play <uri>`.
 
@@ -20,8 +23,8 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, ItemRef, Kind, Track},
+    Config, Engine, Event, Events, Playback, RemoteCommand, RemotePlay, Repeat, Start,
+    model::{Id, ItemRef, Kind, Progress, Track},
 };
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -158,10 +161,59 @@ async fn run() -> Fallible<()> {
             }
             println!("{} episodes", details.episodes.len());
         }
+        ["episode-end", id] => {
+            let episode = ItemRef::episode(Id::from_base62(id)?);
+            let track = api
+                .items(&[episode])
+                .await?
+                .pop()
+                .flatten()
+                .ok_or("no such episode")?;
+            engine.play_tracks(&[episode], 0, Repeat::Off)?;
+            let deadline = tokio::time::sleep(Duration::from_secs(15));
+            tokio::pin!(deadline);
+            let mut sought = false;
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    event = events.recv() => match event {
+                        Some(Event::Playback(Playback { playing: true, .. })) if !sought => {
+                            sought = true;
+                            println!("-> seek to 4 s before the end");
+                            engine.seek(track.duration_ms.saturating_sub(4_000))?;
+                        }
+                        Some(event @ (Event::Item(_) | Event::Playback(_) | Event::Stopped)) => println!("{event:?}"),
+                        Some(_) => {}
+                        None => break,
+                    },
+                }
+            }
+            println!("recorded {:?}", api.episode_progress(episode.id).await?);
+        }
         ["episodes"] => {
             for saved in api.saved_episodes().await? {
                 println!("{} {:?}", Kind::Episode.uri(saved.id), saved.added_at);
             }
+        }
+        ["progress", id] => {
+            println!("{:?}", api.episode_progress(Id::from_base62(id)?).await?);
+        }
+        ["reset-progress", id] => {
+            api.set_episode_progress(Id::from_base62(id)?, Progress::NotStarted)
+                .await?;
+            println!(
+                "now {:?}",
+                api.episode_progress(Id::from_base62(id)?).await?
+            );
+        }
+        ["episode", id, rest @ ..] => {
+            let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
+            let episode = ItemRef::episode(Id::from_base62(id)?);
+            engine.play_tracks(&[episode], 0, Repeat::Off)?;
+            watch(&engine, &mut events, seconds, false).await?;
+            // As the app does when it closes mid-episode.
+            engine.save_progress().await;
+            println!("recorded {:?}", api.episode_progress(episode.id).await?);
         }
         ["shows"] => {
             let saved = api.saved_shows().await?;

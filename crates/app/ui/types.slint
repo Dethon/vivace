@@ -18,6 +18,11 @@ export struct TrackData {
     liked: bool,
     // A podcast episode, saved to Your Episodes rather than liked.
     episode: bool,
+    // How much of an episode was heard, in 0..1; 0 when not started.
+    progress: float,
+    // "41 min left" or "Played" for an episode; otherwise empty.
+    remaining: string,
+    played: bool,
 }
 
 export struct CardData {

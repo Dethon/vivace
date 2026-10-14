@@ -147,6 +147,17 @@ pub struct Episode {
     pub published_at: i64,
 }
 
+/// How far the user has listened to an episode, kept by Spotify across devices.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Progress {
+    #[default]
+    NotStarted,
+    InProgress {
+        position_ms: u32,
+    },
+    Completed,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Show {
     pub id: Id,

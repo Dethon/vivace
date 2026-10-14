@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -21,12 +22,15 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     Api, Connect, Result, auth,
-    model::{ItemRef, Kind},
+    model::{Id, ItemRef, Kind},
+    progress::{self, Recorder},
 };
 
 const CLUSTER_UPDATES: &str = "hm://connect-state/v1/cluster";
 const DEFAULT_VOLUME: u16 = u16::MAX / 2;
 const VOLUME_SETTLE: Duration = Duration::from_millis(300);
+/// How long closing waits for the last episode position to be recorded.
+const FINAL_SAVE_TIMEOUT: Duration = Duration::from_secs(2);
 // Provider Spotify assigns to tracks the user queued by hand.
 pub(crate) const QUEUE_PROVIDER: &str = "queue";
 
@@ -145,6 +149,10 @@ pub struct Engine {
     mixer: Arc<dyn Mixer>,
     // Latest requested volume, published to Connect once it settles.
     volume: watch::Sender<u16>,
+    recorder: Recorder,
+    /// Counts loads, so one that waited for a resume point can tell it was
+    /// overtaken by a newer one.
+    loads: Arc<AtomicU64>,
 }
 
 impl Engine {
@@ -243,6 +251,11 @@ impl Engine {
             _ = closed_tx.send(());
         });
 
+        let recorder = Recorder::start(
+            Api::new(session.clone()),
+            spirc.clone(),
+            player.get_player_event_channel(),
+        );
         let events = Events {
             player: player.get_player_event_channel(),
             cluster,
@@ -262,6 +275,8 @@ impl Engine {
             spirc,
             mixer,
             volume,
+            recorder,
+            loads: Arc::default(),
         };
         Ok((engine, events))
     }
@@ -279,7 +294,8 @@ impl Engine {
         format!("spotify:user:{}:collection", self.session.username())
     }
 
-    /// Plays a playlist, album, artist or collection on this computer.
+    /// Plays a playlist, album, artist or collection on this computer. An
+    /// episode starts where the user left it.
     pub fn play_context(
         &self,
         uri: &str,
@@ -287,43 +303,84 @@ impl Engine {
         shuffle: bool,
         repeat: Repeat,
     ) -> Result<()> {
-        let options = LoadRequestOptions {
-            start_playing: true,
-            seek_to: 0,
-            context_options: Some(LoadContextOptions::Options(Options {
-                shuffle,
-                repeat: repeat == Repeat::Context,
-                repeat_track: repeat == Repeat::Track,
-            })),
-            playing_track: match start {
-                Start::Beginning => None,
-                Start::Index(index) => Some(PlayingTrack::Index(index)),
-                Start::Item(item) => Some(PlayingTrack::Uri(item.uri())),
-            },
+        let uri = uri.to_string();
+        let episode = match start {
+            Start::Item(item) => episode(item),
+            Start::Beginning | Start::Index(_) => None,
         };
-        // Loads are ignored unless this device is the active one.
-        self.spirc.activate()?;
-        self.spirc
-            .load(LoadRequest::from_context_uri(uri.into(), options))?;
-        Ok(())
+        self.load(episode, move |seek_to| {
+            let options = LoadRequestOptions {
+                start_playing: true,
+                seek_to,
+                context_options: Some(LoadContextOptions::Options(Options {
+                    shuffle,
+                    repeat: repeat == Repeat::Context,
+                    repeat_track: repeat == Repeat::Track,
+                })),
+                playing_track: match start {
+                    Start::Beginning => None,
+                    Start::Index(index) => Some(PlayingTrack::Index(index)),
+                    Start::Item(item) => Some(PlayingTrack::Uri(item.uri())),
+                },
+            };
+            LoadRequest::from_context_uri(uri, options)
+        })
     }
 
     /// Plays an ad-hoc list of tracks, such as search results, from `index`.
+    /// An episode starts where the user left it.
     pub fn play_tracks(&self, items: &[ItemRef], index: u32, repeat: Repeat) -> Result<()> {
-        let options = LoadRequestOptions {
-            start_playing: true,
-            seek_to: 0,
-            context_options: Some(LoadContextOptions::Options(Options {
-                shuffle: false,
-                repeat: repeat == Repeat::Context,
-                repeat_track: repeat == Repeat::Track,
-            })),
-            playing_track: Some(PlayingTrack::Index(index)),
-        };
-        let uris = items.iter().map(|item| item.uri()).collect();
+        let episode = items.get(index as usize).copied().and_then(episode);
+        let uris: Vec<String> = items.iter().map(|item| item.uri()).collect();
+        self.load(episode, move |seek_to| {
+            let options = LoadRequestOptions {
+                start_playing: true,
+                seek_to,
+                context_options: Some(LoadContextOptions::Options(Options {
+                    shuffle: false,
+                    repeat: repeat == Repeat::Context,
+                    repeat_track: repeat == Repeat::Track,
+                })),
+                playing_track: Some(PlayingTrack::Index(index)),
+            };
+            LoadRequest::from_tracks(uris, options)
+        })
+    }
+
+    /// Loads what `request` describes, starting at the given position. A
+    /// starting episode is first looked up so it begins where it was left,
+    /// unless another load comes in meanwhile.
+    fn load(
+        &self,
+        episode: Option<Id>,
+        request: impl FnOnce(u32) -> LoadRequest + Send + 'static,
+    ) -> Result<()> {
+        // Loads are ignored unless this device is the active one.
         self.spirc.activate()?;
-        self.spirc.load(LoadRequest::from_tracks(uris, options))?;
+        let load = self.loads.fetch_add(1, Ordering::Relaxed) + 1;
+        let Some(episode) = episode else {
+            return Ok(self.spirc.load(request(0))?);
+        };
+        let (api, spirc, loads) = (self.api(), self.spirc.clone(), self.loads.clone());
+        tokio::spawn(async move {
+            let seek_to = progress::resume_point(&api, episode).await.unwrap_or(0);
+            if loads.load(Ordering::Relaxed) == load
+                && let Err(error) = spirc.load(request(seek_to))
+            {
+                log::warn!("couldn't start the episode: {error}");
+            }
+        });
         Ok(())
+    }
+
+    /// Records where the playing episode is, for closing the app.
+    pub async fn save_progress(&self) {
+        if tokio::time::timeout(FINAL_SAVE_TIMEOUT, self.recorder.flush())
+            .await
+            .is_err()
+        {
+            log::warn!("couldn't record the episode position in time");
+        }
     }
 
     /// Queues a track to play after the current one and anything already queued.
@@ -544,4 +601,8 @@ fn rejects_credentials(error: &librespot_core::Error) -> bool {
         error.kind,
         ErrorKind::Unauthenticated | ErrorKind::PermissionDenied
     )
+}
+
+fn episode(item: ItemRef) -> Option<Id> {
+    (item.kind == Kind::Episode).then_some(item.id)
 }

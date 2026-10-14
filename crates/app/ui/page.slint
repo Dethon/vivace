@@ -353,6 +353,7 @@ component TrackRow inherits Rectangle {
                             color: artist-touch.has-hover ? Theme.text : Theme.text-muted;
                             font-size: 13px;
                             overflow: elide;
+                            horizontal-stretch: 0;
 
                             artist-touch := TouchArea {
                                 width: min(parent.width, parent.preferred-width);
@@ -362,6 +363,42 @@ component TrackRow inherits Rectangle {
                                     root.action(TrackAction.open-artist);
                                 }
                             }
+                        }
+
+                        // How far the user got in an episode, as Spotify's apps show it.
+                        if root.data.remaining != "": Text {
+                            text: "·";
+                            color: Theme.text-muted;
+                            font-size: 13px;
+                        }
+
+                        if root.data.progress > 0: VerticalLayout {
+                            alignment: center;
+
+                            Rectangle {
+                                width: 40px;
+                                height: 4px;
+                                border-radius: 2px;
+                                background: Theme.placeholder;
+
+                                Rectangle {
+                                    x: 0;
+                                    width: parent.width * root.data.progress;
+                                    border-radius: 2px;
+                                    background: Theme.accent;
+                                }
+                            }
+                        }
+
+                        if root.data.remaining != "": Text {
+                            text: root.data.remaining;
+                            color: root.data.played ? Theme.accent : Theme.text-muted;
+                            font-size: 13px;
+                            horizontal-stretch: 0;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
                         }
                     }
                 }

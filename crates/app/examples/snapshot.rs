@@ -72,7 +72,15 @@ fn track(number: i32) -> TrackData {
         playable: number != 5,
         current: number == 3,
         liked: number % 3 == 0,
-        episode: number == 8,
+        episode: number == 4 || number == 6,
+        // One episode partway through and one finished.
+        progress: if number == 4 { 0.35 } else { 0.0 },
+        remaining: match number {
+            4 => "41 min left".into(),
+            6 => "Played".into(),
+            _ => slint::SharedString::default(),
+        },
+        played: number == 6,
     }
 }
 

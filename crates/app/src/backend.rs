@@ -6,7 +6,7 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, Image, ItemRef, Kind, Lyrics, Playlist, Saved, Track},
+    model::{Id, Image, ItemRef, Kind, Lyrics, Playlist, Progress, Saved, Track},
 };
 
 use crate::{
@@ -84,6 +84,11 @@ pub enum Request {
         item: Saveable,
         saved: bool,
     },
+    /// How far the user got in an episode.
+    EpisodeProgress(Id),
+    /// Records the playing episode's position and ends the session, for
+    /// closing the app.
+    Quit,
 }
 
 pub enum Update {
@@ -142,6 +147,10 @@ pub enum Update {
     },
     /// A media key or the system's player controls were used.
     Media(MediaCommand),
+    EpisodeProgress {
+        episode: Id,
+        progress: Progress,
+    },
     /// Saving or removing an item failed and must be undone on screen.
     SaveFailed {
         item: Saveable,
@@ -161,9 +170,14 @@ pub struct ResolvedQueue {
     pub queued: usize,
 }
 
-/// Starts the backend thread and returns the channel for talking to it.
-pub fn spawn(config: Config, updates: UnboundedSender<Update>) -> UnboundedSender<Request> {
+/// Starts the backend thread and returns the channel for talking to it,
+/// with one that tells when the thread has finished.
+pub fn spawn(
+    config: Config,
+    updates: UnboundedSender<Update>,
+) -> (UnboundedSender<Request>, std::sync::mpsc::Receiver<()>) {
     let (requests, receiver) = unbounded_channel();
+    let (finished_tx, finished) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("backend".into())
         .spawn(move || {
@@ -177,9 +191,10 @@ pub fn spawn(config: Config, updates: UnboundedSender<Update>) -> UnboundedSende
                 .build()
                 .expect("tokio runtime starts")
                 .block_on(run(config, receiver, updates));
+            _ = finished_tx.send(());
         })
         .expect("backend thread starts");
-    requests
+    (requests, finished)
 }
 
 /// How a session ended.
@@ -264,6 +279,10 @@ impl Session {
         loop {
             tokio::select! {
                 request = requests.recv() => match request {
+                    Some(Request::Quit) => {
+                        self.engine.save_progress().await;
+                        return Ended::Closed;
+                    }
                     Some(Request::Configure(config)) => return Ended::Restart(Some(config)),
                     Some(Request::SignOut) => {
                         // Keyring backends block.
@@ -300,8 +319,20 @@ impl Session {
 
     fn handle(&self, request: Request) {
         let result = match request {
-            // Both end the session and are taken by `serve` before this.
-            Request::Configure(_) | Request::SignOut => Ok(()),
+            // These end the session and are taken by `serve` before this.
+            Request::Configure(_) | Request::SignOut | Request::Quit => Ok(()),
+            Request::EpisodeProgress(episode) => {
+                self.spawn(move |api, _| async move {
+                    match api.episode_progress(episode).await {
+                        Ok(progress) => Some(Update::EpisodeProgress { episode, progress }),
+                        Err(error) => {
+                            log::warn!("couldn't look up an episode's progress: {error}");
+                            None
+                        }
+                    }
+                });
+                Ok(())
+            }
             Request::Library => {
                 self.spawn(|api, _| async move {
                     let library = tokio::try_join!(

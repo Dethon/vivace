@@ -5,6 +5,7 @@ mod auth;
 mod connect;
 mod engine;
 pub mod model;
+mod progress;
 
 use std::time::Duration;
 
