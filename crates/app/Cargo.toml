@@ -16,6 +16,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
 raw-window-handle = "0.6"
 
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 librespot-playback = { git = "https://github.com/librespot-org/librespot", rev = "4a005903e078d512456fb008aaa9ba6246881bd9", default-features = false }
 memory-stats = "1"

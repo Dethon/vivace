@@ -24,8 +24,17 @@ use vivace_core::{
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 
-#[tokio::main]
-async fn main() -> Fallible<()> {
+fn main() -> Fallible<()> {
+    // SAFETY: nothing has started a thread yet.
+    unsafe { vivace_core::limit_player_threads() };
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Fallible<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();

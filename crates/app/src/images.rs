@@ -10,7 +10,7 @@ use vivace_core::{Api, model::Image};
 use crate::backend::Request;
 
 // Decoded pixels kept for reuse. Evicted images stay alive while on screen.
-const BUDGET_BYTES: usize = 24 * 1024 * 1024;
+const BUDGET_BYTES: usize = 12 * 1024 * 1024;
 // Corner radius as a share of the edge, within limits that suit both
 // thumbnails and page headers.
 const CORNER_FRACTION: f32 = 0.05;

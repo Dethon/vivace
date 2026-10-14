@@ -7,6 +7,9 @@ use vivace::{App, Config, MainWindow, Settings, WindowState};
 const MIN_RESTORED_SIZE: f32 = 320.0;
 
 fn main() -> Result<(), slint::PlatformError> {
+    // SAFETY: nothing has started a thread yet.
+    unsafe { vivace::limit_player_threads() };
+    vivace::tune_allocator();
     vivace::init_logging();
 
     let ui = MainWindow::new()?;

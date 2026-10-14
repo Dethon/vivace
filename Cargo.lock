@@ -7309,6 +7309,7 @@ name = "vivace"
 version = "0.1.0"
 dependencies = [
  "image",
+ "libc",
  "librespot-playback",
  "log",
  "memory-stats",

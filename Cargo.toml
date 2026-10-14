@@ -8,12 +8,39 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+# Most of the program runs rarely, so it is optimised for size: a smaller
+# binary is fewer pages in memory. The code on the hot paths (drawing and
+# audio decoding) is optimised for speed instead.
 [profile.release]
-opt-level = 3
-lto = "thin"
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.release.package.i-slint-renderer-software]
+opt-level = 3
+
+[profile.release.package.i-slint-core]
+opt-level = 3
+
+[profile.release.package.zune-jpeg]
+opt-level = 3
+
+[profile.release.package.image]
+opt-level = 3
+
+[profile.release.package.symphonia-core]
+opt-level = 3
+
+[profile.release.package.symphonia-codec-vorbis]
+opt-level = 3
+
+[profile.release.package.symphonia-format-ogg]
+opt-level = 3
+
+[profile.release.package.librespot-playback]
+opt-level = 3
 
 # See vendor/README.md.
 [patch."https://github.com/librespot-org/librespot"]

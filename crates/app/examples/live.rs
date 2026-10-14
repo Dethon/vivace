@@ -6,7 +6,8 @@
 //!   cargo run -p vivace --example live -- <output directory>
 //!
 //! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page and
-//! adds a track to a new playlist, to exercise playlist editing.
+//! adds a track to a new playlist, to exercise playlist editing. With
+//! `LIVE_NO_PLAYBACK=1` it only browses, leaving other devices undisturbed.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -28,6 +29,8 @@ use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, EventLoopError, Model, PhysicalSize, PlatformError};
 use vivace::{App, Config, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind};
 
+// Name fragments of the steps that start, pause or seek playback.
+const PLAYING_STEPS: [&str; 4] = ["playing", "paused", "lyrics", "stopped"];
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
@@ -121,6 +124,9 @@ impl Sink for Silence {
 type Step = (&'static str, u64, Box<dyn Fn(&MainWindow)>);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // SAFETY: nothing has started a thread yet.
+    unsafe { vivace::limit_player_threads() };
+    vivace::tune_allocator();
     let directory = PathBuf::from(
         std::env::args()
             .nth(1)
@@ -256,6 +262,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.global::<Nav>().invoke_add_to_playlist(row, -1);
             }),
         ));
+    }
+
+    // Starting playback takes it away from whichever device has it, so the
+    // steps that play can be left out while someone is listening.
+    if std::env::var_os("LIVE_NO_PLAYBACK").is_some() {
+        steps.retain(|(name, ..)| !PLAYING_STEPS.iter().any(|playing| name.contains(playing)));
     }
 
     let steps = Rc::new(steps);

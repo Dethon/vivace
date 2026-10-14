@@ -16,6 +16,9 @@ use crate::{
 };
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const WORKER_THREADS: usize = 2;
+const BLOCKING_THREADS: usize = 4;
+const BLOCKING_THREAD_IDLE: Duration = Duration::from_secs(2);
 // Upcoming tracks resolved for the queue panel.
 const QUEUE_LENGTH: usize = 50;
 
@@ -144,7 +147,11 @@ pub fn spawn(config: Config, updates: UnboundedSender<Update>) -> UnboundedSende
         .name("backend".into())
         .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
+                .worker_threads(WORKER_THREADS)
+                // Blocking work is image decoding and name lookups: a few
+                // threads keep up, and idle ones are let go quickly.
+                .max_blocking_threads(BLOCKING_THREADS)
+                .thread_keep_alive(BLOCKING_THREAD_IDLE)
                 .enable_all()
                 .build()
                 .expect("tokio runtime starts")

@@ -15,6 +15,26 @@ pub use engine::{
     Config, Engine, Event, Events, Playback, Queue, QueueItem, Repeat, SinkFactory, Start,
 };
 
+// Tokio reads this when a runtime is built without an explicit size.
+const WORKER_THREADS_VARIABLE: &str = "TOKIO_WORKER_THREADS";
+const PLAYER_WORKER_THREADS: &str = "2";
+
+/// Keeps librespot's player from starting one idle thread per CPU core.
+///
+/// Its playback runtime is built with Tokio's defaults, which size the pool
+/// to the machine; two workers are plenty for one audio stream.
+///
+/// # Safety
+///
+/// Changes the process environment, so it must be called while no other
+/// thread exists: first thing in `main`.
+pub unsafe fn limit_player_threads() {
+    if std::env::var_os(WORKER_THREADS_VARIABLE).is_none() {
+        // SAFETY: the caller guarantees this is the only thread.
+        unsafe { std::env::set_var(WORKER_THREADS_VARIABLE, PLAYER_WORKER_THREADS) };
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("no usable config directory on this platform")]

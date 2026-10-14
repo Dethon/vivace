@@ -4,6 +4,7 @@
 //!
 //! `SNAPSHOT_QUEUE=1` opens the queue panel; `SNAPSHOT_CLICK=x,y` and
 //! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup.
+//! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
 
 use std::rc::Rc;
 
@@ -17,6 +18,9 @@ use vivace::{
     CardData, DeviceIcon, DeviceItem, Devices, HeaderData, Library, LibraryItem, MainWindow, Nav,
     Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, TrackData,
 };
+
+// Frames drawn when timing is requested.
+const FRAMES: u32 = 30;
 
 struct Headless(Rc<MinimalSoftwareWindow>);
 
@@ -230,6 +234,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.window().dispatch_event(event);
         }
         slint::platform::update_timers_and_animations();
+    }
+    if std::env::var_os("SNAPSHOT_TIMING").is_some() {
+        // A rough measure of how long drawing the whole window takes.
+        let started = std::time::Instant::now();
+        for _ in 0..FRAMES {
+            ui.window().take_snapshot()?;
+        }
+        println!(
+            "full frame: {:.2} ms",
+            started.elapsed().as_secs_f64() * 1000.0 / f64::from(FRAMES)
+        );
     }
     let snapshot = ui.window().take_snapshot()?;
     image::save_buffer(
