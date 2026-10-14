@@ -45,7 +45,7 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.show()?;
     // Opened by the login entry: out of the way until wanted.
     if std::env::args().any(|argument| argument == vivace::BACKGROUND_FLAG) {
-        ui.window().set_minimized(true);
+        minimise_when_created(&ui);
         if app.keeps_running_in_tray() {
             app.start_in_tray();
         }
@@ -57,6 +57,29 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.hide()?;
     app.quit();
     Ok(())
+}
+
+/// Minimises the window as soon as the system has created it: asked any
+/// earlier, minimising is ignored.
+fn minimise_when_created(ui: &MainWindow) {
+    use raw_window_handle::HasWindowHandle;
+
+    const CHECK_EVERY: std::time::Duration = std::time::Duration::from_millis(10);
+    let window = ui.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, CHECK_EVERY, move || {
+        let Some(ui) = window.upgrade() else { return };
+        if ui.window().window_handle().window_handle().is_ok() {
+            ui.window().set_minimized(true);
+            WAITING.with(|timer| timer.take());
+        }
+    });
+    // Kept until the window exists.
+    WAITING.with(|waiting| *waiting.borrow_mut() = Some(timer));
+}
+
+thread_local! {
+    static WAITING: std::cell::RefCell<Option<slint::Timer>> = const { std::cell::RefCell::new(None) };
 }
 
 fn remember_window(window: &slint::Window) {
