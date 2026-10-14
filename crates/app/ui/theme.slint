@@ -27,6 +27,9 @@ export global Icons {
     out property <string> repeat: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z";
     out property <string> repeat-one: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z";
     out property <string> heart: "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z";
+    out property <string> bookmark: "M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z";
+    out property <string> add-circle: "M13 7h-2v4H7v2h4v4h2v-4h4v-2h-4V7zm-1-5C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z";
+    out property <string> check-circle: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z";
     out property <string> heart-outline: "M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z";
     out property <string> search: "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z";
     out property <string> home: "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z";
@@ -96,24 +99,29 @@ export component IconButton inherits Rectangle {
     }
 }
 
+// A collection drawn as an emblem rather than artwork.
+export enum Emblem { none, liked-songs, your-episodes }
+
 // Artwork with a neutral placeholder until the image arrives. Corners are
 // rounded in the bitmap itself, so nothing is clipped while scrolling.
 export component Cover inherits Rectangle {
     in property <image> source;
     in property <length> size: 48px;
     in property <bool> round;
-    // Draws the Liked Songs emblem instead of artwork.
-    in property <bool> liked-songs;
+    // Draws a collection's emblem instead of artwork.
+    in property <Emblem> emblem;
 
     width: self.size;
     height: self.size;
     border-radius: self.round ? self.size / 2 : clamp(self.size * 5%, 3px, 10px);
-    background: self.liked-songs ? @linear-gradient(135deg, #5b3df5 0%, #b9a8ff 100%) : self.source.width > 0 ? transparent : Theme.placeholder;
+    background: self.emblem == Emblem.liked-songs ? @linear-gradient(135deg, #5b3df5 0%, #b9a8ff 100%)
+        : self.emblem == Emblem.your-episodes ? @linear-gradient(135deg, #0b6e55 0%, #3ccf9a 100%)
+        : self.source.width > 0 ? transparent : Theme.placeholder;
 
-    if root.liked-songs || root.source.width == 0: Icon {
-        path: root.liked-songs ? Icons.heart : Icons.note;
+    if root.emblem != Emblem.none || root.source.width == 0: Icon {
+        path: root.emblem == Emblem.liked-songs ? Icons.heart : root.emblem == Emblem.your-episodes ? Icons.bookmark : Icons.note;
         size: min(root.size * 45%, 64px);
-        tint: root.liked-songs ? white : Theme.text-faint;
+        tint: root.emblem != Emblem.none ? white : Theme.text-faint;
     }
 
     Image {

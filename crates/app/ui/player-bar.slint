@@ -117,8 +117,10 @@ export component PlayerBar inherits Rectangle {
             VerticalLayout {
                 alignment: center;
 
-                if Player.available && Player.likeable: IconButton {
-                    icon: Player.liked ? Icons.heart : Icons.heart-outline;
+                if Player.available: IconButton {
+                    icon: Player.episode
+                        ? (Player.liked ? Icons.check-circle : Icons.add-circle)
+                        : (Player.liked ? Icons.heart : Icons.heart-outline);
                     icon-size: 18px;
                     active: Player.liked;
                     clicked => {

@@ -15,6 +15,7 @@ const POPULAR_TRACKS: usize = 10;
 pub enum Page {
     Home,
     Liked,
+    YourEpisodes,
     Playlist(Id),
     Album(Id),
     Artist(Id),
@@ -39,16 +40,25 @@ pub struct Header {
     pub subtitle: String,
     pub image: Option<Image>,
     pub round: bool,
-    /// Shows the Liked Songs emblem instead of artwork.
-    pub liked_songs: bool,
+    /// Shows a collection's emblem instead of artwork.
+    pub emblem: Option<Emblem>,
     /// What the header's save or follow button acts on, if it has one.
     pub save: Option<Saveable>,
+}
+
+/// The user's own collections, drawn as an emblem rather than artwork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emblem {
+    LikedSongs,
+    YourEpisodes,
 }
 
 /// Something that can be kept in the user's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Saveable {
     Track(Id),
+    /// A podcast episode, kept in Your Episodes.
+    Episode(Id),
     Album(Id),
     Artist(Id),
     Show(Id),
@@ -56,8 +66,11 @@ pub enum Saveable {
 
 impl Saveable {
     pub fn id(self) -> Id {
-        let (Saveable::Track(id) | Saveable::Album(id) | Saveable::Artist(id) | Saveable::Show(id)) =
-            self;
+        let (Saveable::Track(id)
+        | Saveable::Episode(id)
+        | Saveable::Album(id)
+        | Saveable::Artist(id)
+        | Saveable::Show(id)) = self;
         id
     }
 }
@@ -120,17 +133,17 @@ pub struct Card {
     pub subtitle: String,
     pub image: Option<Image>,
     pub round: bool,
-    /// Shows the Liked Songs emblem instead of artwork.
-    pub liked_songs: bool,
     pub target: Page,
 }
 
 impl Page {
-    /// Fetches everything the page shows. `liked_uri` is the user's Liked Songs context.
-    pub async fn load(&self, api: &Api, liked_uri: &str) -> Result<PageData> {
+    /// Fetches everything the page shows. `collection_uri` is the user's
+    /// collection, the context Liked Songs play in.
+    pub async fn load(&self, api: &Api, collection_uri: &str) -> Result<PageData> {
         match self {
             Page::Home => home(api).await,
-            Page::Liked => liked(api, liked_uri).await,
+            Page::Liked => liked(api, collection_uri).await,
+            Page::YourEpisodes => your_episodes(api, collection_uri).await,
             Page::Playlist(id) => playlist(api, *id).await,
             Page::Album(id) => album(api, *id).await,
             Page::Artist(id) => artist(api, *id).await,
@@ -193,7 +206,7 @@ async fn home(api: &Api) -> Result<PageData> {
     })
 }
 
-async fn liked(api: &Api, liked_uri: &str) -> Result<PageData> {
+async fn liked(api: &Api, collection_uri: &str) -> Result<PageData> {
     let saved = api.saved().await?.tracks;
     let ids: Vec<Id> = saved.iter().map(|saved| saved.id).collect();
     let tracks: Vec<TrackEntry> = api
@@ -216,15 +229,55 @@ async fn liked(api: &Api, liked_uri: &str) -> Result<PageData> {
             subtitle: format::count(tracks.len(), "song"),
             image: None,
             round: false,
-            liked_songs: true,
+            emblem: Some(Emblem::LikedSongs),
             save: None,
         }),
-        context: Some(liked_uri.into()),
+        context: Some(collection_uri.into()),
         sections: vec![track_list(
             tracks,
             Dates::Added,
             false,
             "Songs you like will appear here",
+        )],
+    })
+}
+
+async fn your_episodes(api: &Api, collection_uri: &str) -> Result<PageData> {
+    let saved = api.saved_episodes().await?;
+    let items: Vec<ItemRef> = saved
+        .iter()
+        .map(|saved| ItemRef::episode(saved.id))
+        .collect();
+    // Episodes taken down since they were saved come back empty and are left out.
+    let episodes: Vec<TrackEntry> = api
+        .items(&items)
+        .await?
+        .into_iter()
+        .zip(&saved)
+        .filter_map(|(track, saved)| {
+            Some(TrackEntry {
+                track: track?,
+                added_at: saved.added_at,
+            })
+        })
+        .collect();
+
+    Ok(PageData {
+        header: Some(Header {
+            kind: "Playlist",
+            title: "Your Episodes".into(),
+            subtitle: format::count(episodes.len(), "episode"),
+            image: None,
+            round: false,
+            emblem: Some(Emblem::YourEpisodes),
+            save: None,
+        }),
+        context: Some(format!("{collection_uri}:your-episodes")),
+        sections: vec![track_list(
+            episodes,
+            Dates::Added,
+            false,
+            "Episodes you save will appear here",
         )],
     })
 }
@@ -261,7 +314,7 @@ async fn playlist(api: &Api, id: Id) -> Result<PageData> {
             ),
             image,
             round: false,
-            liked_songs: false,
+            emblem: None,
             save: None,
         }),
         context: Some(Kind::Playlist.uri(id)),
@@ -299,7 +352,7 @@ async fn album(api: &Api, id: Id) -> Result<PageData> {
             subtitle,
             image: album.cover,
             round: false,
-            liked_songs: false,
+            emblem: None,
             save: Some(Saveable::Album(id)),
         }),
         context: Some(Kind::Album.uri(id)),
@@ -361,7 +414,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
             subtitle: String::new(),
             image: details.artist.image,
             round: true,
-            liked_songs: false,
+            emblem: None,
             save: Some(Saveable::Artist(id)),
         }),
         context: Some(Kind::Artist.uri(id)),
@@ -387,7 +440,7 @@ async fn show(api: &Api, id: Id) -> Result<PageData> {
             subtitle: details.show.publisher.into(),
             image: details.show.image,
             round: false,
-            liked_songs: false,
+            emblem: None,
             save: Some(Saveable::Show(id)),
         }),
         context: Some(Kind::Show.uri(id)),
@@ -526,7 +579,6 @@ fn playlist_card(playlist: &Playlist) -> Card {
         },
         image: playlist.image.clone(),
         round: false,
-        liked_songs: false,
         target: Page::Playlist(playlist.id),
     }
 }
@@ -538,7 +590,6 @@ fn album_card(album: &Album) -> Card {
         subtitle: artist_names(album),
         image: album.cover.clone(),
         round: false,
-        liked_songs: false,
         target: Page::Album(album.id),
     }
 }
@@ -562,7 +613,6 @@ fn show_card(show: &Show) -> Card {
         subtitle: show.publisher.to_string(),
         image: show.image.clone(),
         round: false,
-        liked_songs: false,
         target: Page::Show(show.id),
     }
 }
@@ -573,7 +623,6 @@ fn artist_card(artist: &Artist) -> Card {
         subtitle: "Artist".into(),
         image: artist.image.clone(),
         round: true,
-        liked_songs: false,
         target: Page::Artist(artist.id),
     }
 }

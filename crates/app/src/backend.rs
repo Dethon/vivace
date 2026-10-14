@@ -6,7 +6,7 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, Image, ItemRef, Kind, Lyrics, Playlist, Track},
+    model::{Id, Image, ItemRef, Kind, Lyrics, Playlist, Saved, Track},
 };
 
 use crate::{
@@ -98,6 +98,8 @@ pub enum Update {
     Library {
         playlists: Vec<Playlist>,
         liked: Vec<Id>,
+        /// Episodes in Your Episodes.
+        episodes: Vec<Id>,
         /// Saved albums, followed artists and followed podcasts.
         saved: Vec<Id>,
     },
@@ -306,12 +308,14 @@ impl Session {
                         api.playlists(),
                         api.saved(),
                         api.followed_artists(),
-                        api.saved_shows()
+                        api.saved_shows(),
+                        api.saved_episodes()
                     );
                     match library {
-                        Ok((playlists, saved, artists, shows)) => Update::Library {
+                        Ok((playlists, saved, artists, shows, episodes)) => Update::Library {
                             playlists,
                             liked: saved.tracks.iter().map(|saved| saved.id).collect(),
+                            episodes: available_episodes(&api, &episodes).await,
                             saved: saved
                                 .albums
                                 .iter()
@@ -427,6 +431,7 @@ impl Session {
                 self.spawn(move |api, _| async move {
                     let result = match item {
                         Saveable::Track(id) => api.set_saved(Kind::Track, id, saved).await,
+                        Saveable::Episode(id) => api.set_episode_saved(id, saved).await,
                         Saveable::Album(id) => api.set_saved(Kind::Album, id, saved).await,
                         Saveable::Artist(id) => api.set_followed(id, saved).await,
                         Saveable::Show(id) => api.set_show_saved(id, saved).await,
@@ -646,4 +651,25 @@ async fn resolve_queue(api: &Api, queue: Queue, sequence: u64) -> Option<Update>
         tracks,
         queued,
     }))
+}
+
+/// The saved episodes that still exist. Spotify keeps episodes taken down
+/// since in the set; they can be neither shown nor played, so they are not
+/// counted. Without metadata every episode counts.
+async fn available_episodes(api: &Api, saved: &[Saved]) -> Vec<Id> {
+    let items: Vec<ItemRef> = saved
+        .iter()
+        .map(|saved| ItemRef::episode(saved.id))
+        .collect();
+    match api.items(&items).await {
+        Ok(found) => found
+            .into_iter()
+            .zip(saved)
+            .filter_map(|(episode, saved)| episode.map(|_| saved.id))
+            .collect(),
+        Err(error) => {
+            log::warn!("couldn't look up saved episodes: {error}");
+            saved.iter().map(|saved| saved.id).collect()
+        }
+    }
 }

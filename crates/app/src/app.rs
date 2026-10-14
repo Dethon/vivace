@@ -13,11 +13,11 @@ use vivace_core::{
 };
 
 use crate::{
-    CardData, DeviceIcon, DeviceItem, Devices, Dialog, HeaderData, Library, LibraryItem,
-    LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session,
-    SettingsView, TrackAction, TrackData,
+    CardData, DeviceIcon, DeviceItem, Devices, Dialog, Emblem as EmblemKind, HeaderData, Library,
+    LibraryItem, LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind,
+    Session, SettingsView, TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
-    content::{Card, Dates, Page, PageData, Saveable, Section},
+    content::{Card, Dates, Emblem, Page, PageData, Saveable, Section},
     format,
     images::{Images, Shape},
     media::{Attach, MediaCommand, MediaKeys},
@@ -25,6 +25,8 @@ use crate::{
     settings::Settings,
 };
 
+/// Library entries above the playlists: Liked Songs and Your Episodes.
+const COLLECTIONS: usize = 2;
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
 const NOTICE_DURATION: Duration = Duration::from_secs(4);
 const MEDIA_ATTACH_INTERVAL: Duration = Duration::from_millis(250);
@@ -82,7 +84,9 @@ struct State {
     playlists: Vec<Playlist>,
     username: String,
     liked: HashSet<Id>,
-    /// Saved albums and followed artists.
+    /// Episodes in Your Episodes.
+    episodes: HashSet<Id>,
+    /// Saved albums, followed artists and followed podcasts.
     saved: HashSet<Id>,
 
     now_playing: Option<Track>,
@@ -132,6 +136,7 @@ impl State {
     fn is_saved(&self, item: Saveable) -> bool {
         match item {
             Saveable::Track(id) => self.liked.contains(&id),
+            Saveable::Episode(id) => self.episodes.contains(&id),
             Saveable::Album(id) | Saveable::Artist(id) | Saveable::Show(id) => {
                 self.saved.contains(&id)
             }
@@ -205,6 +210,7 @@ impl App {
                 playlists: Vec::new(),
                 username: String::new(),
                 liked: HashSet::new(),
+                episodes: HashSet::new(),
                 saved: HashSet::new(),
                 now_playing: None,
                 playing: false,
@@ -453,14 +459,9 @@ impl App {
             app.request(Request::Repeat(repeat));
         }));
         player.on_toggle_liked(self.handler(|app| {
-            let track = app
-                .state
-                .borrow()
-                .now_playing
-                .as_ref()
-                .map(|track| track.id);
-            if let Some(track) = track {
-                app.toggle_liked(track);
+            let item = app.state.borrow().now_playing.as_ref().map(saveable);
+            if let Some(item) = item {
+                app.toggle_saved(item);
             }
         }));
         player.on_open_album(self.handler(|app| {
@@ -571,6 +572,7 @@ impl App {
                     state.username.clear();
                     state.playlists.clear();
                     state.liked.clear();
+                    state.episodes.clear();
                     state.saved.clear();
                     state.cache.clear();
                     state.page = None;
@@ -613,14 +615,16 @@ impl App {
             Update::Library {
                 playlists,
                 liked,
+                episodes,
                 saved,
             } => {
                 let len = {
                     let mut state = self.state.borrow_mut();
                     state.playlists = playlists;
                     state.liked = liked.into_iter().collect();
+                    state.episodes = episodes.into_iter().collect();
                     state.saved = saved.into_iter().collect();
-                    state.playlists.len() + 1
+                    state.playlists.len() + COLLECTIONS
                 };
                 self.library.reset(len);
                 self.rows.refresh_all();
@@ -1262,8 +1266,9 @@ impl App {
     }
 
     fn open_library_item(&self, index: usize) {
-        let page = match index.checked_sub(1) {
-            None => Some(Page::Liked),
+        let page = match index.checked_sub(COLLECTIONS) {
+            None if index == 0 => Some(Page::Liked),
+            None => Some(Page::YourEpisodes),
             Some(index) => self
                 .state
                 .borrow()
@@ -1378,9 +1383,7 @@ impl App {
             }
         };
         match action {
-            // Episodes are kept through their show, not liked one by one.
-            TrackAction::ToggleLiked if track.is_episode() => {}
-            TrackAction::ToggleLiked => self.toggle_liked(track.id),
+            TrackAction::ToggleLiked => self.toggle_saved(saveable(&track)),
             TrackAction::AddToQueue => self.request(Request::AddToQueue(track.item())),
             TrackAction::OpenAlbum => self.open(album_page(&track)),
             TrackAction::OpenArtist => {
@@ -1406,7 +1409,7 @@ impl App {
         let (playlist, name, owned) = {
             let state = self.state.borrow();
             let Some(playlist) = index
-                .checked_sub(1)
+                .checked_sub(COLLECTIONS)
                 .and_then(|index| state.playlists.get(index))
             else {
                 return;
@@ -1556,10 +1559,6 @@ impl App {
         });
     }
 
-    fn toggle_liked(&self, track: Id) {
-        self.toggle_saved(Saveable::Track(track));
-    }
-
     /// Saves or removes the album or artist the page is about.
     fn toggle_page_saved(&self) {
         let item = {
@@ -1586,6 +1585,7 @@ impl App {
             let mut state = self.state.borrow_mut();
             let set = match item {
                 Saveable::Track(_) => &mut state.liked,
+                Saveable::Episode(_) => &mut state.episodes,
                 Saveable::Album(_) | Saveable::Artist(_) | Saveable::Show(_) => &mut state.saved,
             };
             if saved {
@@ -1595,9 +1595,17 @@ impl App {
             }
         }
         match item {
-            Saveable::Track(track) => {
+            Saveable::Track(track) | Saveable::Episode(track) => {
                 self.refresh_track(track);
                 self.show_player_liked();
+                // The collection's library entry counts its items: Liked
+                // Songs is the first entry, Your Episodes the second.
+                let entry = if matches!(item, Saveable::Episode(_)) {
+                    1
+                } else {
+                    0
+                };
+                self.library.refresh(entry);
             }
             // The header is the page's first row.
             Saveable::Album(_) | Saveable::Artist(_) | Saveable::Show(_) => self.rows.refresh(0),
@@ -1605,24 +1613,16 @@ impl App {
     }
 
     fn show_player_liked(&self) {
-        let liked = {
+        let (liked, episode) = {
             let state = self.state.borrow();
-            state
-                .now_playing
-                .as_ref()
-                .is_some_and(|track| state.liked.contains(&track.id))
-        };
-        let likeable = {
-            let state = self.state.borrow();
-            state
-                .now_playing
-                .as_ref()
-                .is_some_and(|track| !track.is_episode())
+            state.now_playing.as_ref().map_or((false, false), |track| {
+                (state.is_saved(saveable(track)), track.is_episode())
+            })
         };
         self.with_ui(|ui| {
             let player = ui.global::<Player>();
             player.set_liked(liked);
-            player.set_likeable(likeable);
+            player.set_episode(episode);
         });
     }
 
@@ -1678,13 +1678,15 @@ impl App {
                             self.shape(HEADER_COVER, header.round),
                         ),
                         round: header.round,
-                        liked_songs: header.liked_songs,
+                        emblem: emblem(header.emblem),
                         playable: page.context.is_some(),
                         save: match header.save {
                             Some(Saveable::Album(_)) => SaveKind::Album,
                             // A show is followed, like an artist.
                             Some(Saveable::Artist(_) | Saveable::Show(_)) => SaveKind::Artist,
-                            Some(Saveable::Track(_)) | None => SaveKind::None,
+                            Some(Saveable::Track(_) | Saveable::Episode(_)) | None => {
+                                SaveKind::None
+                            }
                         },
                         saved: header.save.is_some_and(|item| state.is_saved(item)),
                     },
@@ -1749,7 +1751,7 @@ impl App {
                             self.shape(CARD_COVER, card.round),
                         ),
                         round: card.round,
-                        liked_songs: card.liked_songs,
+                        emblem: EmblemKind::None,
                     })
                     .collect();
                 Row {
@@ -1786,21 +1788,30 @@ impl App {
                 .now_playing
                 .as_ref()
                 .is_some_and(|playing| playing.id == track.id),
-            liked: state.liked.contains(&track.id),
-            likeable: !track.is_episode(),
+            liked: state.is_saved(saveable(track)),
+            episode: track.is_episode(),
         }
     }
 
     fn library_item(&self, index: usize) -> Option<LibraryItem> {
         let state = self.state.borrow();
         let current = &state.history[state.position].page;
-        Some(match index.checked_sub(1) {
-            None => LibraryItem {
+        Some(match index.checked_sub(COLLECTIONS) {
+            None if index == 0 => LibraryItem {
                 title: "Liked Songs".into(),
                 subtitle: format!("Playlist · {}", format::count(state.liked.len(), "song")).into(),
                 cover: slint::Image::default(),
-                liked_songs: true,
+                emblem: EmblemKind::LikedSongs,
                 selected: *current == Page::Liked,
+                owned: false,
+                removable: false,
+            },
+            None => LibraryItem {
+                title: "Your Episodes".into(),
+                subtitle: format::count(state.episodes.len(), "episode").into(),
+                cover: slint::Image::default(),
+                emblem: EmblemKind::YourEpisodes,
+                selected: *current == Page::YourEpisodes,
                 owned: false,
                 removable: false,
             },
@@ -1813,7 +1824,7 @@ impl App {
                         self.playlist_image(playlist, true).as_ref(),
                         self.shape(THUMBNAIL, false),
                     ),
-                    liked_songs: false,
+                    emblem: EmblemKind::None,
                     selected: *current == Page::Playlist(playlist.id),
                     owned: *playlist.owner == *state.username,
                     removable: true,
@@ -1952,4 +1963,21 @@ fn page_title(page: &PageData) -> String {
 fn artist_names(track: &Track) -> String {
     let names: Vec<&str> = track.artists.iter().map(|artist| &*artist.name).collect();
     names.join(", ")
+}
+
+/// How a track is kept in the library: liked, or saved to Your Episodes.
+fn saveable(track: &Track) -> Saveable {
+    if track.is_episode() {
+        Saveable::Episode(track.id)
+    } else {
+        Saveable::Track(track.id)
+    }
+}
+
+fn emblem(emblem: Option<Emblem>) -> EmblemKind {
+    match emblem {
+        None => EmblemKind::None,
+        Some(Emblem::LikedSongs) => EmblemKind::LikedSongs,
+        Some(Emblem::YourEpisodes) => EmblemKind::YourEpisodes,
+    }
 }

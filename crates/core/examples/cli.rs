@@ -1,6 +1,6 @@
 //! Developer tool exercising the engine against a real account.
 //!
-//!   cli library | home | shows | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
+//!   cli library | home | shows | episodes | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
 //!   cli listen <context uri> [seconds]     plays and prints what happens
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
@@ -157,6 +157,11 @@ async fn run() -> Fallible<()> {
                 print_tracks(std::slice::from_ref(&episode.track));
             }
             println!("{} episodes", details.episodes.len());
+        }
+        ["episodes"] => {
+            for saved in api.saved_episodes().await? {
+                println!("{} {:?}", Kind::Episode.uri(saved.id), saved.added_at);
+            }
         }
         ["shows"] => {
             let saved = api.saved_shows().await?;

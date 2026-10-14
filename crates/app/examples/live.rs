@@ -31,7 +31,8 @@ use slint::platform::software_renderer::{
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, EventLoopError, Model, PhysicalSize, PlatformError};
 use vivace::{
-    App, Config, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind, SettingsView,
+    App, Config, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind,
+    SettingsView, TrackAction,
 };
 
 // What the playlist-editing scenario renames its playlist to before deleting it.
@@ -173,7 +174,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (
             "2-playlist",
             3000,
-            Box::new(|ui| ui.global::<Library>().invoke_open(1)),
+            // The first playlist, after Liked Songs and Your Episodes.
+            Box::new(|ui| ui.global::<Library>().invoke_open(2)),
         ),
         (
             "3-playing",
@@ -352,6 +354,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "p4-paused",
             1500,
             Box::new(|ui| ui.global::<Player>().invoke_toggle()),
+        ));
+        // Saves the episode to Your Episodes, where it comes first, and takes
+        // it out again from there.
+        steps.push((
+            "p5-saved",
+            3000,
+            Box::new(move |ui| {
+                ui.global::<Nav>()
+                    .invoke_track_action(first_row(ui, RowKind::Track), TrackAction::ToggleLiked);
+            }),
+        ));
+        steps.push((
+            "p6-your-episodes",
+            4000,
+            Box::new(|ui| ui.global::<Library>().invoke_open(1)),
+        ));
+        steps.push((
+            "p7-unsaved",
+            3000,
+            Box::new(move |ui| {
+                ui.global::<Nav>()
+                    .invoke_track_action(first_row(ui, RowKind::Track), TrackAction::ToggleLiked);
+            }),
         ));
     }
 

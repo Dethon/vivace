@@ -40,7 +40,7 @@ component HeaderRow inherits Rectangle {
             source: root.data.cover;
             size: 192px;
             round: root.data.round;
-            liked-songs: root.data.liked-songs;
+            emblem: root.data.emblem;
         }
 
         VerticalLayout {
@@ -211,8 +211,10 @@ component TrackRow inherits Rectangle {
                 }
             }
 
-            if root.data.likeable: MenuItem {
-                title: root.data.liked ? "Remove from Liked Songs" : "Save to Liked Songs";
+            MenuItem {
+                title: root.data.episode
+                    ? (root.data.liked ? "Remove from Your Episodes" : "Save to Your Episodes")
+                    : (root.data.liked ? "Remove from Liked Songs" : "Save to Liked Songs");
                 activated => {
                     root.action(TrackAction.toggle-liked);
                 }
@@ -244,13 +246,13 @@ component TrackRow inherits Rectangle {
             }
 
             MenuItem {
-                title: root.data.likeable ? "Go to album" : "Go to podcast";
+                title: root.data.episode ? "Go to podcast" : "Go to album";
                 activated => {
                     root.action(TrackAction.open-album);
                 }
             }
 
-            if root.data.likeable: MenuItem {
+            if !root.data.episode: MenuItem {
                 title: "Go to artist";
                 activated => {
                     root.action(TrackAction.open-artist);
@@ -401,8 +403,9 @@ component TrackRow inherits Rectangle {
                     alignment: center;
 
                     like := IconButton {
-                        icon: root.data.liked ? Icons.heart : Icons.heart-outline;
-                        visible: root.data.likeable;
+                        icon: root.data.episode
+                            ? (root.data.liked ? Icons.check-circle : Icons.add-circle)
+                            : (root.data.liked ? Icons.heart : Icons.heart-outline);
                         icon-size: 18px;
                         active: root.data.liked;
                         opacity: root.data.liked || root.hovered ? 1 : 0;
@@ -459,7 +462,7 @@ component Card inherits Rectangle {
                 source: root.data.cover;
                 size: 152px;
                 round: root.data.round;
-                liked-songs: root.data.liked-songs;
+                emblem: root.data.emblem;
             }
         }
 

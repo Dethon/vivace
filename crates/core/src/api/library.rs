@@ -17,6 +17,7 @@ const COLLECTION_PAGE: i32 = 2000;
 const SET_ITEMS: &str = "collection";
 const SET_ARTISTS: &str = "artist";
 const SET_SHOWS: &str = "show";
+const SET_EPISODES: &str = "listenlater";
 
 // Messages of Spotify's collection service, which librespot does not ship.
 #[derive(Clone, PartialEq, prost::Message)]
@@ -166,6 +167,29 @@ impl Api {
             .collect();
         shows.sort_by_key(|saved| std::cmp::Reverse(saved.added_at));
         Ok(shows)
+    }
+
+    /// Episodes in "Your Episodes", newest first.
+    pub async fn saved_episodes(&self) -> Result<Vec<Saved>> {
+        let mut episodes: Vec<Saved> = self
+            .collection(SET_EPISODES)
+            .await?
+            .iter()
+            .filter_map(|item| {
+                Some(Saved {
+                    id: Kind::Episode.id(&item.uri)?,
+                    added_at: item.added_at.into(),
+                })
+            })
+            .collect();
+        episodes.sort_by_key(|saved| std::cmp::Reverse(saved.added_at));
+        Ok(episodes)
+    }
+
+    /// Adds an episode to "Your Episodes", or removes it.
+    pub async fn set_episode_saved(&self, episode: Id, saved: bool) -> Result<()> {
+        self.write(SET_EPISODES, Kind::Episode.uri(episode), saved)
+            .await
     }
 
     /// Follows or unfollows a podcast.

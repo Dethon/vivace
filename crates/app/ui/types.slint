@@ -1,6 +1,8 @@
 // Data exchanged with the Rust side. Globals keep callbacks out of the
 // component tree: any component reads state and reports actions directly.
 
+import { Emblem } from "theme.slint";
+
 export struct TrackData {
     title: string,
     artists: string,
@@ -12,9 +14,10 @@ export struct TrackData {
     explicit: bool,
     playable: bool,
     current: bool,
+    // In Liked Songs, or for an episode in Your Episodes.
     liked: bool,
-    // False for podcast episodes, which have no like button.
-    likeable: bool,
+    // A podcast episode, saved to Your Episodes rather than liked.
+    episode: bool,
 }
 
 export struct CardData {
@@ -22,8 +25,7 @@ export struct CardData {
     subtitle: string,
     cover: image,
     round: bool,
-    // Draws the Liked Songs emblem instead of artwork.
-    liked-songs: bool,
+    emblem: Emblem,
 }
 
 export enum SaveKind { none, album, artist }
@@ -34,7 +36,7 @@ export struct HeaderData {
     subtitle: string,
     cover: image,
     round: bool,
-    liked-songs: bool,
+    emblem: Emblem,
     playable: bool,
     // Which save control the header offers, and whether it is on.
     save: SaveKind,
@@ -61,7 +63,7 @@ export struct LibraryItem {
     title: string,
     subtitle: string,
     cover: image,
-    liked-songs: bool,
+    emblem: Emblem,
     selected: bool,
     // A playlist the user owns: it can be renamed and deleted.
     owned: bool,
@@ -90,8 +92,9 @@ export global Player {
     in property <string> artists;
     in property <image> cover;
     in property <bool> playing;
+    // In Liked Songs, or for an episode in Your Episodes.
     in property <bool> liked;
-    in property <bool> likeable: true;
+    in property <bool> episode;
     in property <int> position-ms;
     in property <int> duration-ms;
     in property <float> volume: 0.5;

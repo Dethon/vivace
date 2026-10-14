@@ -16,8 +16,9 @@ use slint::{
     SharedPixelBuffer, VecModel,
 };
 use vivace::{
-    CardData, DeviceIcon, DeviceItem, Devices, HeaderData, Library, LibraryItem, MainWindow, Nav,
-    Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, SettingsView, TrackData,
+    CardData, DeviceIcon, DeviceItem, Devices, Emblem, HeaderData, Library, LibraryItem,
+    MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, SettingsView,
+    TrackData,
 };
 
 // Frames drawn when timing is requested.
@@ -71,7 +72,7 @@ fn track(number: i32) -> TrackData {
         playable: number != 5,
         current: number == 3,
         liked: number % 3 == 0,
-        likeable: true,
+        episode: number == 8,
     }
 }
 
@@ -92,17 +93,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let library: Vec<LibraryItem> = (0..9)
         .map(|index| LibraryItem {
-            title: ["Liked Songs", "Late Night Drive", "Road Trip", "Focus"][index % 4].into(),
+            title: match index {
+                0 => "Liked Songs",
+                1 => "Your Episodes",
+                _ => ["Late Night Drive", "Road Trip", "Focus"][index % 3],
+            }
+            .into(),
             subtitle: ["Playlist · 83 songs", "Playlist · listener"][index % 2].into(),
-            cover: if index == 2 {
+            cover: if index <= 2 {
                 Image::default()
             } else {
                 cover(index as u32 + 20, 40)
             },
-            liked_songs: index == 0,
+            emblem: match index {
+                0 => Emblem::LikedSongs,
+                1 => Emblem::YourEpisodes,
+                _ => Emblem::None,
+            },
             owned: index % 2 == 1,
-            removable: index > 0,
-            selected: index == 1,
+            removable: index > 1,
+            selected: index == 2,
         })
         .collect();
     ui.global::<Library>()
@@ -120,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cover(seed + index as u32, 152)
                 },
                 round,
-                liked_songs: false,
+                emblem: Emblem::None,
             })
             .collect();
         ModelRc::new(VecModel::from(cards))
@@ -134,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 subtitle: "listener · 187 songs".into(),
                 cover: cover(7, 192),
                 round: false,
-                liked_songs: false,
+                emblem: Emblem::None,
                 playable: true,
                 save: SaveKind::Album,
                 saved: true,
