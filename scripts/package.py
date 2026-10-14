@@ -3,7 +3,10 @@
 
     scripts/package.py [--skip-build] [--only windows|linux]
 
-Windows: a portable zip, cross-built with cargo-xwin.
+Windows: an installer and a portable zip, cross-built with cargo-xwin. The
+installer needs NSIS; without `makensis` on the PATH, Debian and Ubuntu
+unpack it into target/nsis, no root needed. Set PUBLISHER to name a
+publisher in the installer.
 Linux: a tarball with an installer script, and a .deb when dpkg-deb is
 available.
 
@@ -26,6 +29,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "crates" / "app" / "assets"
 DIST = ROOT / "dist"
+INSTALLER = ROOT / "installer" / "vivace.nsi"
+LOCAL_NSIS = ROOT / "target" / "nsis"
 WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 
 # Shared libraries the Linux build links, and those winit opens at run time
@@ -78,18 +83,59 @@ def icon_pngs() -> dict[int, bytes]:
     return images
 
 
+def makensis() -> list[str] | None:
+    """The command running NSIS's compiler, unpacking NSIS if need be."""
+    if shutil.which("makensis"):
+        return ["makensis"]
+    binary = LOCAL_NSIS / "usr" / "bin" / "makensis"
+    if not binary.exists() and shutil.which("apt-get") and shutil.which("dpkg"):
+        print("makensis not found; unpacking NSIS into target/nsis", flush=True)
+        with tempfile.TemporaryDirectory() as debs:
+            subprocess.run(
+                ["apt-get", "download", "nsis", "nsis-common"],
+                cwd=debs, check=True, capture_output=True,
+            )
+            for deb in Path(debs).glob("*.deb"):
+                subprocess.run(["dpkg", "-x", str(deb), str(LOCAL_NSIS)], check=True)
+    if binary.exists():
+        return ["env", f"NSISDIR={LOCAL_NSIS / 'usr' / 'share' / 'nsis'}", str(binary)]
+    return None
+
+
 def windows(skip_build: bool, release: str) -> None:
     if not skip_build:
         run(
             "cargo", "xwin", "build", "--release", "--target", WINDOWS_TARGET,
             "-p", "vivace", "--bin", "vivace",
         )
-    exe = ROOT / "target" / WINDOWS_TARGET / "release" / "vivace.exe"
+    # The portable folder, which the zip and the installer both hold.
+    folder = DIST / "vivace-windows-x64"
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    shutil.copy(ROOT / "target" / WINDOWS_TARGET / "release" / "vivace.exe", folder)
+    shutil.copy(ROOT / "LICENSE", folder / "LICENSE.txt")
+
     archive = DIST / f"vivace-{release}-windows-x64.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zip:
-        zip.write(exe, "Vivace/vivace.exe")
-        zip.write(ROOT / "LICENSE", "Vivace/LICENSE.txt")
+        for file in sorted(folder.iterdir()):
+            zip.write(file, f"Vivace/{file.name}")
     print("wrote", archive.relative_to(ROOT))
+
+    compiler = makensis()
+    if compiler is None:
+        sys.exit("NSIS (makensis) is needed for the installer: apt install nsis")
+    setup = DIST / f"Vivace-{release}-setup.exe"
+    publisher = os.environ.get("PUBLISHER")
+    run(
+        *compiler, "-V2", "-INPUTCHARSET", "UTF8",
+        f"-DVERSION={release}",
+        f"-DDIST={folder}",
+        f"-DICON={ASSETS / 'icon.ico'}",
+        f"-DOUTFILE={setup}",
+        *([f"-DPUBLISHER={publisher}"] if publisher else []),
+        str(INSTALLER),
+    )
+    print("wrote", setup.relative_to(ROOT))
 
 
 def linux_files(binary: Path) -> dict[str, tuple[bytes, int]]:

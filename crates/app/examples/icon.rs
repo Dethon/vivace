@@ -1,55 +1,69 @@
-//! Regenerates `assets/icon.png`, the window icon, and `assets/icon.ico`,
-//! the Windows executable's icon, from the `AppIcon` component.
+//! Regenerates the icon files from `assets/icon.svg`: `assets/icon.png`,
+//! the window icon, `assets/icon.ico`, the Windows executable's icon, and
+//! `installer/welcome.bmp`, the side panel of the installer's first and
+//! last pages.
 //!
 //!   cargo run -p vivace --example icon
 
 use std::io::Cursor;
-use std::rc::Rc;
 
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, WindowAdapter};
-use slint::{ComponentHandle, PhysicalSize, PlatformError};
-use vivace::AppIcon;
+use resvg::{tiny_skia, usvg};
 
 const SIZE: u32 = 128;
 // Sizes Windows picks from for the taskbar, Explorer views and Alt+Tab.
 const ICO_SIZES: [u32; 9] = [16, 20, 24, 32, 40, 48, 64, 128, 256];
-const CORNER_FRACTION: f32 = 0.22;
+// NSIS's welcome-page panel, and the icon's size on it.
+const PANEL: (u32, u32) = (164, 314);
+const PANEL_ICON: u32 = 96;
+// The app's background colour, top and bottom of the panel.
+const PANEL_TOP: [u8; 3] = [0x1d, 0x1f, 0x27];
+const PANEL_BOTTOM: [u8; 3] = [0x0d, 0x0e, 0x12];
 
-struct Headless(Rc<MinimalSoftwareWindow>);
-
-impl Platform for Headless {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(self.0.clone())
-    }
+/// Draws the icon at `size` pixels.
+fn render(tree: &usvg::Tree, size: u32) -> Result<image::RgbaImage, Box<dyn std::error::Error>> {
+    let mut pixmap = tiny_skia::Pixmap::new(size, size).ok_or("the icon has no size")?;
+    let scale = size as f32 / tree.size().width();
+    resvg::render(
+        tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    // tiny-skia keeps colours premultiplied by alpha; image files do not.
+    let pixels = pixmap
+        .pixels()
+        .iter()
+        .flat_map(|pixel| {
+            let color = pixel.demultiply();
+            [color.red(), color.green(), color.blue(), color.alpha()]
+        })
+        .collect();
+    Ok(image::RgbaImage::from_raw(size, size, pixels).ok_or("the icon has an unexpected size")?)
 }
 
-/// Fades out the pixels outside a rounded square of the given radius.
-fn round_corners(image: &mut image::RgbaImage, radius: f32) {
-    let size = image.width() as f32;
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-        let dx = (radius - px).max(px - (size - radius)).max(0.0);
-        let dy = (radius - py).max(py - (size - radius)).max(0.0);
-        let coverage = (radius - dx.hypot(dy) + 0.5).clamp(0.0, 1.0);
-        pixel.0[3] = (f32::from(pixel.0[3]) * coverage) as u8;
-    }
-}
-
-/// Draws the icon at `size` pixels with rounded corners.
-fn render(
-    window: &MinimalSoftwareWindow,
-    icon: &AppIcon,
-    size: u32,
-) -> Result<image::RgbaImage, Box<dyn std::error::Error>> {
-    icon.set_size(size as f32);
-    window.set_size(PhysicalSize::new(size, size));
-    icon.show()?;
-    let snapshot = icon.window().take_snapshot()?;
-    let mut image = image::RgbaImage::from_raw(size, size, snapshot.as_bytes().to_vec())
-        .ok_or("the snapshot has an unexpected size")?;
-    round_corners(&mut image, size as f32 * CORNER_FRACTION);
-    Ok(image)
+/// The installer's side panel: the app's dark background with the icon a
+/// third of the way down. BMP has no transparency, so the icon is blended
+/// onto the background here.
+fn panel(icon: &image::RgbaImage) -> image::RgbImage {
+    let (width, height) = PANEL;
+    let left = (width - icon.width()) / 2;
+    let top = height / 3 - icon.height() / 2;
+    image::RgbImage::from_fn(width, height, |x, y| {
+        let fraction = y as f32 / (height - 1) as f32;
+        let mut pixel: [f32; 3] = std::array::from_fn(|channel| {
+            f32::from(PANEL_TOP[channel]) * (1.0 - fraction)
+                + f32::from(PANEL_BOTTOM[channel]) * fraction
+        });
+        let inside =
+            (left..left + icon.width()).contains(&x) && (top..top + icon.height()).contains(&y);
+        if inside {
+            let over = icon.get_pixel(x - left, y - top).0;
+            let alpha = f32::from(over[3]) / 255.0;
+            for (channel, value) in pixel.iter_mut().enumerate() {
+                *value = f32::from(over[channel]) * alpha + *value * (1.0 - alpha);
+            }
+        }
+        image::Rgb(pixel.map(|value| value.round() as u8))
+    })
 }
 
 /// An `.ico` file holding one PNG image per size, which Windows reads
@@ -77,23 +91,25 @@ fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-    slint::platform::set_platform(Box::new(Headless(window.clone())))?;
-    let icon = AppIcon::new()?;
+    let svg = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg"))?;
+    let tree = usvg::Tree::from_data(&svg, &usvg::Options::default())?;
 
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.png");
-    render(&window, &icon, SIZE)?.save(path)?;
+    render(&tree, SIZE)?.save(path)?;
     println!("wrote {path}");
 
     let mut images = Vec::new();
     for size in ICO_SIZES {
         let mut png = Vec::new();
-        render(&window, &icon, size)?
-            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)?;
+        render(&tree, size)?.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)?;
         images.push((size, png));
     }
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.ico");
     std::fs::write(path, ico(&images))?;
+    println!("wrote {path}");
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../installer/welcome.bmp");
+    panel(&render(&tree, PANEL_ICON)?).save(path)?;
     println!("wrote {path}");
     Ok(())
 }

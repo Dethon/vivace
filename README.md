@@ -26,8 +26,11 @@ librespot does not and will not circumvent.
 
 Build the packages with `scripts/package.py` (below), then:
 
-- **Windows**: unzip `vivace-<version>-windows-x64.zip` anywhere and run
-  `vivace.exe`.
+- **Windows**: run `Vivace-<version>-setup.exe`, which installs for your
+  user without administrator rights; uninstall from Settings › Apps. It is
+  not code-signed, so SmartScreen warns on first run: *More info*, then
+  *Run anyway*. `/S` installs silently. Or unzip
+  `vivace-<version>-windows-x64.zip` anywhere and run `vivace.exe`.
 - **Debian, Ubuntu**: `sudo apt install ./vivace_<version>_amd64.deb`.
 - **Other Linux**: unpack `vivace-<version>-linux-x64.tar.gz` and run
   `./install.sh`, which installs to `~/.local`.
@@ -47,7 +50,15 @@ Windows builds cross-compile from Linux with
 
     cargo xwin build --release --target x86_64-pc-windows-msvc -p vivace
 
-`scripts/package.py` builds both and writes the packages to `dist/`.
+`scripts/package.py` builds both and writes the packages to `dist/`. The
+Windows installer is defined in `installer/vivace.nsi` and built with
+[NSIS](https://nsis.sourceforge.io); without `makensis` installed the script
+unpacks it into `target/nsis`, no root needed. Set `PUBLISHER="Your Name"`
+to name a publisher in it.
+
+The icon is drawn in `crates/app/assets/icon.svg`; after changing it,
+`cargo run -p vivace --example icon` regenerates the PNG, the `.ico` and the
+installer's side panel.
 
 ## Layout
 
