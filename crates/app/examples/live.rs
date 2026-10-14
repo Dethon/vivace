@@ -8,6 +8,8 @@
 //! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page,
 //! adds a track to a new playlist, renames that playlist and deletes it. With
 //! `LIVE_NO_PLAYBACK=1` it only browses, leaving other devices undisturbed.
+//! With `LIVE_SETTINGS=1` it changes settings and signs out; afterwards the
+//! saved login is gone, so keep a copy of it to restore.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -27,7 +29,9 @@ use slint::platform::software_renderer::{
 };
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, EventLoopError, Model, PhysicalSize, PlatformError};
-use vivace::{App, Config, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind};
+use vivace::{
+    App, Config, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind, SettingsView,
+};
 
 // What the playlist-editing scenario renames its playlist to before deleting it.
 const TEST_PLAYLIST: &str = "Vivace live test";
@@ -313,6 +317,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.global::<Dialog>().invoke_confirmed("".into());
                 }
             }),
+        ));
+    }
+
+    // Changes a setting, which reconnects, and then signs out. Signing in
+    // again needs the browser, so run this with a copy of the credentials.
+    if std::env::var_os("LIVE_SETTINGS").is_some() {
+        steps.truncate(1);
+        steps.push((
+            "s2-settings",
+            1000,
+            Box::new(|ui| ui.global::<Nav>().invoke_open_settings()),
+        ));
+        steps.push((
+            "s3-normal-quality",
+            6000,
+            Box::new(|ui| ui.global::<SettingsView>().invoke_set_quality(1)),
+        ));
+        steps.push((
+            "s4-renamed-device",
+            6000,
+            Box::new(|ui| {
+                ui.global::<SettingsView>().invoke_set_quality(2);
+                ui.global::<SettingsView>()
+                    .invoke_set_device_name("Vivace test".into());
+            }),
+        ));
+        steps.push((
+            "s5-sign-out-dialog",
+            6000,
+            Box::new(|ui| {
+                ui.global::<SettingsView>()
+                    .invoke_set_device_name("Vivace".into());
+                ui.global::<SettingsView>().invoke_sign_out();
+            }),
+        ));
+        steps.push((
+            "s6-signed-out",
+            4000,
+            Box::new(|ui| ui.global::<Dialog>().invoke_confirmed("".into())),
         ));
     }
 

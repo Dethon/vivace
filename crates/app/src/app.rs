@@ -8,20 +8,21 @@ use std::time::{Duration, Instant};
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Config, Connect, Device, DeviceKind, Playback, Repeat, Start,
+    Config, Connect, Device, DeviceKind, Playback, Quality, Repeat, Start,
     model::{Id, Image, Lyrics, Playlist, Track},
 };
 
 use crate::{
     CardData, DeviceIcon, DeviceItem, Devices, Dialog, HeaderData, Library, LibraryItem,
     LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session,
-    TrackAction, TrackData,
+    SettingsView, TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
     content::{Card, Page, PageData, Saveable, Section},
     format,
     images::{Images, Shape},
     media::{Attach, MediaCommand, MediaKeys},
     models::LazyModel,
+    settings::Settings,
 };
 
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
@@ -140,6 +141,7 @@ enum Question {
     Rename(Id),
     /// Remove a playlist, named for the confirmation message.
     Remove(Id, String),
+    SignOut,
 }
 
 struct Visit {
@@ -268,6 +270,45 @@ impl App {
         nav.on_back(self.handler(|app| app.step(-1)));
         nav.on_forward(self.handler(|app| app.step(1)));
         nav.on_open_home(self.handler(|app| app.open(Page::Home)));
+        nav.on_open_settings(self.handler(|app| app.open(Page::Settings)));
+
+        let settings = ui.global::<SettingsView>();
+        settings.set_version(env!("CARGO_PKG_VERSION").into());
+        if let Ok(folder) = vivace_core::data_dir() {
+            settings.set_data_folder(folder.display().to_string().into());
+        }
+        self.show_settings(&Settings::load());
+        settings.on_set_quality({
+            let app = Rc::downgrade(self);
+            move |quality| {
+                let quality = match quality {
+                    0 => Quality::Low,
+                    1 => Quality::Normal,
+                    _ => Quality::VeryHigh,
+                };
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.quality = quality);
+                }
+            }
+        });
+        settings.on_set_normalise({
+            let app = Rc::downgrade(self);
+            move |normalise| {
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.normalise = normalise);
+                }
+            }
+        });
+        settings.on_set_device_name({
+            let app = Rc::downgrade(self);
+            move |name| {
+                let name = name.trim().to_owned();
+                if let (Some(app), false) = (app.upgrade(), name.is_empty()) {
+                    app.change_settings(|settings| settings.device_name = name);
+                }
+            }
+        });
+        settings.on_sign_out(self.handler(Self::ask_to_sign_out));
         nav.on_play_page(self.handler(Self::play_page));
         nav.on_toggle_saved(self.handler(Self::toggle_page_saved));
         nav.on_search({
@@ -526,7 +567,38 @@ impl App {
                     self.open(Page::Home);
                 }
             }
+            Update::SignedOut => {
+                {
+                    // Nothing of the previous account stays on screen.
+                    let mut state = self.state.borrow_mut();
+                    state.ever_connected = false;
+                    state.username.clear();
+                    state.playlists.clear();
+                    state.liked.clear();
+                    state.saved.clear();
+                    state.cache.clear();
+                    state.page = None;
+                    state.layout.clear();
+                    state.history = vec![Visit {
+                        page: Page::Home,
+                        scroll_y: 0.0,
+                    }];
+                    state.position = 0;
+                }
+                self.library.reset(0);
+                self.rows.reset(0);
+                self.with_ui(|ui| {
+                    ui.global::<SettingsView>().set_visible(false);
+                    ui.global::<Session>().set_connected(false);
+                    ui.global::<SettingsView>()
+                        .set_username(SharedString::default());
+                });
+            }
             Update::Connected { username } => {
+                self.with_ui(|ui| {
+                    ui.global::<SettingsView>()
+                        .set_username(username.as_str().into())
+                });
                 self.state.borrow_mut().username = username;
                 self.state.borrow_mut().ever_connected = true;
                 self.with_ui(|ui| ui.global::<Session>().set_connected(true));
@@ -1073,11 +1145,13 @@ impl App {
             )
         };
 
-        let is_cached = cached.is_some();
+        let is_settings = page == Page::Settings;
+        let is_cached = cached.is_some() || is_settings;
         if let Some(data) = cached {
             self.set_page(data, scroll_y);
         }
         self.with_ui(|ui| {
+            ui.global::<SettingsView>().set_visible(is_settings);
             let nav = ui.global::<Nav>();
             nav.set_can_go_back(can_go_back);
             nav.set_can_go_forward(can_go_forward);
@@ -1094,7 +1168,9 @@ impl App {
         });
         self.library.refresh_all();
         self.show_editable();
-        self.request(Request::Page { token, page });
+        if !is_settings {
+            self.request(Request::Page { token, page });
+        }
     }
 
     fn page_loaded(&self, token: u64, result: Result<PageData, String>) {
@@ -1363,6 +1439,45 @@ impl App {
         });
     }
 
+    fn ask_to_sign_out(&self) {
+        self.state.borrow_mut().question = Some(Question::SignOut);
+        self.with_ui(|ui| {
+            let dialog = ui.global::<Dialog>();
+            dialog.set_has_input(false);
+            dialog.set_text(SharedString::default());
+            dialog.set_title("Sign out?".into());
+            dialog.set_message(
+                "You will have to approve access in your browser to sign in again.".into(),
+            );
+            dialog.set_confirm_label("Sign out".into());
+            dialog.set_visible(true);
+        });
+    }
+
+    /// Stores a change to the settings and reconnects with it, which is
+    /// the only way the player picks it up.
+    fn change_settings(&self, change: impl FnOnce(&mut Settings)) {
+        let before = Settings::load();
+        let settings = Settings::update(change);
+        self.show_settings(&settings);
+        if settings.config_differs(&before) {
+            self.request(Request::Configure(settings.config()));
+        }
+    }
+
+    fn show_settings(&self, settings: &Settings) {
+        self.with_ui(|ui| {
+            let view = ui.global::<SettingsView>();
+            view.set_quality(match settings.quality {
+                Quality::Low => 0,
+                Quality::Normal => 1,
+                Quality::VeryHigh => 2,
+            });
+            view.set_normalise(settings.normalise);
+            view.set_device_name(settings.device_name.as_str().into());
+        });
+    }
+
     /// Carries out what the dialog asked about; `text` is the typed answer.
     fn dialog_confirmed(&self, text: &str) {
         self.with_ui(|ui| ui.global::<Dialog>().set_visible(false));
@@ -1377,6 +1492,7 @@ impl App {
             Some(Question::Remove(playlist, name)) => {
                 self.request(Request::RemovePlaylist { playlist, name })
             }
+            Some(Question::SignOut) => self.request(Request::SignOut),
             Some(Question::Rename(_)) | None => {}
         }
     }

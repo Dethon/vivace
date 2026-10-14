@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use slint::{CloseRequestResponse, ComponentHandle, LogicalSize};
-use vivace::{App, Config, MainWindow, Settings, WindowState};
+use vivace::{App, MainWindow, Settings, WindowState};
 
 // Smaller than this and the saved size is ignored as a likely glitch.
 const MIN_RESTORED_SIZE: f32 = 320.0;
@@ -23,13 +23,13 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.window().set_maximized(window.maximized);
     }
 
-    let app = App::start(&ui, Config::default())?;
+    let app = App::start(&ui, settings.config())?;
 
     ui.window().on_close_requested({
         let ui = ui.as_weak();
         move || {
             if let Some(ui) = ui.upgrade() {
-                remember_window(ui.window(), settings.clone());
+                remember_window(ui.window());
             }
             CloseRequestResponse::HideWindow
         }
@@ -41,22 +41,16 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.hide()
 }
 
-fn remember_window(window: &slint::Window, mut settings: Settings) {
+fn remember_window(window: &slint::Window) {
     let maximized = window.is_maximized();
     let size = window.size().to_logical(window.scale_factor());
-    settings.window = Some(WindowState {
+    Settings::update(|settings| {
         // A maximised window keeps the size it had before, for when it is restored.
-        width: if maximized {
-            settings.window.map_or(size.width, |window| window.width)
-        } else {
-            size.width
-        },
-        height: if maximized {
-            settings.window.map_or(size.height, |window| window.height)
-        } else {
-            size.height
-        },
-        maximized,
+        let restored = settings.window.filter(|_| maximized);
+        settings.window = Some(WindowState {
+            width: restored.map_or(size.width, |window| window.width),
+            height: restored.map_or(size.height, |window| window.height),
+            maximized,
+        });
     });
-    settings.save();
 }

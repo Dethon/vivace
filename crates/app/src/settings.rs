@@ -4,13 +4,29 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use vivace_core::{Config, Quality};
 
 const FILE_NAME: &str = "settings.json";
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub window: Option<WindowState>,
+    pub quality: Quality,
+    pub normalise: bool,
+    /// Name this computer has in Spotify's device list.
+    pub device_name: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            window: None,
+            quality: Quality::default(),
+            normalise: false,
+            device_name: Config::DEFAULT_DEVICE_NAME.into(),
+        }
+    }
 }
 
 /// The window's size in logical pixels. Its position is not kept: a saved
@@ -35,7 +51,32 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    pub fn save(&self) {
+    /// Changes the stored settings. They are re-read first because the
+    /// window and the settings page each write their own part.
+    pub fn update(change: impl FnOnce(&mut Self)) -> Self {
+        let mut settings = Self::load();
+        change(&mut settings);
+        settings.save();
+        settings
+    }
+
+    /// Whether the two differ in something the engine has to restart for.
+    pub fn config_differs(&self, other: &Self) -> bool {
+        (self.quality, self.normalise, &self.device_name)
+            != (other.quality, other.normalise, &other.device_name)
+    }
+
+    /// The engine configuration these settings ask for.
+    pub fn config(&self) -> Config {
+        Config {
+            device_name: self.device_name.clone(),
+            quality: self.quality,
+            normalise: self.normalise,
+            sink: None,
+        }
+    }
+
+    fn save(&self) {
         let Some(path) = path() else { return };
         let result = serde_json::to_vec_pretty(self)
             .map_err(std::io::Error::other)
@@ -64,6 +105,9 @@ mod tests {
                 height: 800.0,
                 maximized: true,
             }),
+            quality: Quality::Normal,
+            normalise: true,
+            device_name: "Study".into(),
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), settings);
@@ -82,6 +126,8 @@ mod tests {
                 maximized: false,
             })
         );
+        assert_eq!(settings.quality, Quality::VeryHigh);
+        assert_eq!(settings.device_name, "Vivace");
         assert_eq!(
             serde_json::from_str::<Settings>("{}").unwrap(),
             Settings::default()

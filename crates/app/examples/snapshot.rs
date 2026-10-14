@@ -2,7 +2,8 @@
 //!
 //!   cargo run -p vivace --example snapshot -- out.png [width height]
 //!
-//! `SNAPSHOT_QUEUE=1` opens the queue panel; `SNAPSHOT_CLICK=x,y` and
+//! `SNAPSHOT_QUEUE=1` opens the queue panel and `SNAPSHOT_SETTINGS=1` the
+//! settings page; `SNAPSHOT_CLICK=x,y` and
 //! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup.
 //! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
 
@@ -16,7 +17,7 @@ use slint::{
 };
 use vivace::{
     CardData, DeviceIcon, DeviceItem, Devices, HeaderData, Library, LibraryItem, MainWindow, Nav,
-    Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, TrackData,
+    Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, SettingsView, TrackData,
 };
 
 // Frames drawn when timing is requested.
@@ -216,6 +217,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.global::<Devices>()
         .set_items(ModelRc::new(VecModel::from(devices)));
     ui.global::<Devices>().set_remote_name("Cocina".into());
+
+    let settings = ui.global::<SettingsView>();
+    settings.set_visible(std::env::var_os("SNAPSHOT_SETTINGS").is_some());
+    settings.set_quality(2);
+    settings.set_normalise(true);
+    settings.set_device_name("Vivace".into());
+    settings.set_username("listener".into());
+    settings.set_version("0.1.0".into());
+    settings.set_data_folder("/home/user/.config/vivace".into());
 
     ui.show()?;
     slint::platform::update_timers_and_animations();

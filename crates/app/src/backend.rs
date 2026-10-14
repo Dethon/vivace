@@ -23,6 +23,10 @@ const BLOCKING_THREAD_IDLE: Duration = Duration::from_secs(2);
 const QUEUE_LENGTH: usize = 50;
 
 pub enum Request {
+    /// Reconnects with a different quality, normalisation or device name.
+    Configure(Config),
+    /// Forgets the saved login and starts signing in again.
+    SignOut,
     Library,
     Page {
         token: u64,
@@ -87,6 +91,8 @@ pub enum Update {
     Connected {
         username: String,
     },
+    /// The saved login was forgotten; signing in starts over.
+    SignedOut,
     /// Signing in failed; another attempt follows shortly.
     Failed(String),
     Library {
@@ -174,9 +180,19 @@ pub fn spawn(config: Config, updates: UnboundedSender<Update>) -> UnboundedSende
     requests
 }
 
+/// How a session ended.
+enum Ended {
+    /// The UI is gone.
+    Closed,
+    /// The connection dropped; try again after a pause.
+    Lost,
+    /// The user changed the configuration or signed out; reconnect at once.
+    Restart(Option<Config>),
+}
+
 /// Keeps a session alive until the UI goes away, reconnecting as needed.
 async fn run(
-    config: Config,
+    mut config: Config,
     mut requests: UnboundedReceiver<Request>,
     updates: UnboundedSender<Update>,
 ) {
@@ -184,11 +200,7 @@ async fn run(
         if updates.send(Update::Connecting).is_err() {
             return;
         }
-        let config = Config {
-            device_name: config.device_name.clone(),
-            sink: config.sink.clone(),
-        };
-        match Engine::connect(config).await {
+        match Engine::connect(config.clone()).await {
             Ok((engine, mut events)) => {
                 let session = Session {
                     api: engine.api(),
@@ -199,8 +211,19 @@ async fn run(
                     remote: None,
                     remote_track: None,
                 };
-                if session.serve(&mut requests, &mut events).await.is_break() {
-                    return;
+                match session.serve(&mut requests, &mut events).await {
+                    Ended::Closed => return,
+                    Ended::Lost => {}
+                    Ended::Restart(changed) => {
+                        if let Some(changed) = changed {
+                            // Tools keep the sink they started with.
+                            config = Config {
+                                sink: config.sink.clone(),
+                                ..changed
+                            };
+                        }
+                        continue;
+                    }
                 }
             }
             Err(error) => {
@@ -226,26 +249,31 @@ struct Session {
 }
 
 impl Session {
-    /// Serves requests until the session drops (`Continue`) or the UI closes (`Break`).
+    /// Serves requests until the session ends, and says why it did.
     async fn serve(
         mut self,
         requests: &mut UnboundedReceiver<Request>,
         events: &mut vivace_core::Events,
-    ) -> std::ops::ControlFlow<()> {
-        use std::ops::ControlFlow::{Break, Continue};
-
+    ) -> Ended {
         let username = self.engine.username();
         if self.updates.send(Update::Connected { username }).is_err() {
-            return Break(());
+            return Ended::Closed;
         }
         loop {
             tokio::select! {
                 request = requests.recv() => match request {
+                    Some(Request::Configure(config)) => return Ended::Restart(Some(config)),
+                    Some(Request::SignOut) => {
+                        // Keyring backends block.
+                        _ = tokio::task::spawn_blocking(vivace_core::sign_out).await;
+                        self.send(Update::SignedOut);
+                        return Ended::Restart(None);
+                    }
                     Some(request) => self.handle(request),
-                    None => return Break(()),
+                    None => return Ended::Closed,
                 },
                 event = events.recv() => match event {
-                    Some(Event::Disconnected) | None => return Continue(()),
+                    Some(Event::Disconnected) | None => return Ended::Lost,
                     Some(event) => self.forward(event),
                 },
             }
@@ -270,6 +298,8 @@ impl Session {
 
     fn handle(&self, request: Request) {
         let result = match request {
+            // Both end the session and are taken by `serve` before this.
+            Request::Configure(_) | Request::SignOut => Ok(()),
             Request::Library => {
                 self.spawn(|api, _| async move {
                     match tokio::try_join!(api.playlists(), api.saved(), api.followed_artists()) {

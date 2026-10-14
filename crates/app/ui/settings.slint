@@ -1,0 +1,228 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { SettingsView } from "types.slint";
+
+component Choice inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    width: text.preferred-width + 32px;
+    height: 32px;
+    border-radius: 16px;
+    background: root.selected ? Theme.text : touch.has-hover ? Theme.surface-active : Theme.surface-hover;
+
+    text := Text {
+        text: root.label;
+        color: root.selected ? Theme.on-accent : Theme.text;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component Toggle inherits Rectangle {
+    in property <bool> on;
+    callback toggled();
+
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.on ? Theme.accent : Theme.surface-active;
+
+    Rectangle {
+        x: root.on ? 22px : 2px;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: Theme.text;
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.toggled();
+        }
+    }
+}
+
+component Setting inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+
+    spacing: 10px;
+
+    VerticalLayout {
+        spacing: 4px;
+
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        if root.detail != "": Text {
+            text: root.detail;
+            color: Theme.text-muted;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+
+    @children
+}
+
+component SectionTitle inherits Text {
+    color: Theme.text;
+    font-size: 22px;
+    font-weight: 700;
+}
+
+export component SettingsPage inherits Rectangle {
+    background: Theme.surface;
+    border-radius: 8px;
+    clip: true;
+
+    ScrollView {
+        VerticalLayout {
+            alignment: start;
+            padding: Theme.gutter;
+            spacing: 28px;
+
+            Text {
+                text: "Settings";
+                color: Theme.text;
+                font-size: 32px;
+                font-weight: 800;
+            }
+
+            SectionTitle {
+                text: "Playback";
+            }
+
+            Setting {
+                title: "Audio quality";
+                detail: "Higher quality uses more data. Changing this restarts playback.";
+
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 8px;
+
+                    Choice {
+                        label: "Low · 96 kbps";
+                        selected: SettingsView.quality == 0;
+                        clicked => {
+                            SettingsView.set-quality(0);
+                        }
+                    }
+
+                    Choice {
+                        label: "Normal · 160 kbps";
+                        selected: SettingsView.quality == 1;
+                        clicked => {
+                            SettingsView.set-quality(1);
+                        }
+                    }
+
+                    Choice {
+                        label: "Very high · 320 kbps";
+                        selected: SettingsView.quality == 2;
+                        clicked => {
+                            SettingsView.set-quality(2);
+                        }
+                    }
+                }
+            }
+
+            Setting {
+                title: "Normalise volume";
+                detail: "Plays every track at a similar loudness. Changing this restarts playback.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.normalise;
+                        toggled => {
+                            SettingsView.set-normalise(!SettingsView.normalise);
+                        }
+                    }
+                }
+            }
+
+            Setting {
+                title: "Device name";
+                detail: "How this computer appears in Spotify's device list. Press Enter to apply.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Rectangle {
+                        width: 320px;
+                        height: 40px;
+                        border-radius: Theme.radius;
+                        background: Theme.surface-hover;
+                        border-width: 1px;
+                        border-color: name.has-focus ? Theme.text-muted : Theme.divider;
+
+                        name := TextInput {
+                            x: 12px;
+                            width: parent.width - 24px;
+                            height: 20px;
+                            text: SettingsView.device-name;
+                            color: Theme.text;
+                            font-size: 14px;
+                            single-line: true;
+                            selection-background-color: Theme.accent;
+                            selection-foreground-color: Theme.on-accent;
+                            accepted => {
+                                SettingsView.set-device-name(self.text);
+                            }
+                        }
+                    }
+                }
+            }
+
+            SectionTitle {
+                text: "Account";
+            }
+
+            Setting {
+                title: SettingsView.username == "" ? "Not signed in" : "Signed in as " + SettingsView.username;
+                detail: "Signing out forgets the saved login on this computer.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Choice {
+                        label: "Sign out";
+                        clicked => {
+                            SettingsView.sign-out();
+                        }
+                    }
+                }
+            }
+
+            SectionTitle {
+                text: "About";
+            }
+
+            Setting {
+                title: "Vivace " + SettingsView.version;
+                detail: "An unofficial client; not affiliated with Spotify. Made with Slint.";
+            }
+
+            Setting {
+                title: "Data folder";
+                detail: SettingsView.data-folder;
+            }
+        }
+    }
+}

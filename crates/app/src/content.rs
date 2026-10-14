@@ -19,6 +19,8 @@ pub enum Page {
     Album(Id),
     Artist(Id),
     Search(String),
+    /// The settings screen, which has no content to fetch.
+    Settings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +112,11 @@ impl Page {
             Page::Album(id) => album(api, *id).await,
             Page::Artist(id) => artist(api, *id).await,
             Page::Search(query) => search(api, query).await,
+            Page::Settings => Ok(PageData {
+                header: None,
+                context: None,
+                sections: Vec::new(),
+            }),
         }
     }
 }

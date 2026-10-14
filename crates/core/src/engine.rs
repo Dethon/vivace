@@ -38,17 +38,40 @@ type ClusterUpdates = futures_util::stream::BoxStream<
 /// Creates the audio sink on the player thread.
 pub type SinkFactory = Arc<dyn Fn() -> Box<dyn Sink> + Send + Sync>;
 
+/// The stream quality to ask for; all are Ogg Vorbis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Quality {
+    /// 96 kbps.
+    Low,
+    /// 160 kbps.
+    Normal,
+    /// 320 kbps, the most librespot can stream.
+    #[default]
+    VeryHigh,
+}
+
+#[derive(Clone)]
 pub struct Config {
     /// Name shown in Spotify's device picker.
     pub device_name: String,
+    pub quality: Quality,
+    /// Even out loudness between tracks.
+    pub normalise: bool,
     /// Replaces the system's default audio output, e.g. to discard audio in tools.
     pub sink: Option<SinkFactory>,
+}
+
+impl Config {
+    pub const DEFAULT_DEVICE_NAME: &str = "Vivace";
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            device_name: "Vivace".into(),
+            device_name: Self::DEFAULT_DEVICE_NAME.into(),
+            quality: Quality::default(),
+            normalise: false,
             sink: None,
         }
     }
@@ -124,7 +147,7 @@ impl Engine {
     /// Signs in, opening the browser when no valid credentials are stored,
     /// and registers this computer as a Connect device.
     pub async fn connect(config: Config) -> Result<(Self, Events)> {
-        let sink = match config.sink {
+        let sink = match config.sink.clone() {
             Some(sink) => sink,
             None => {
                 let backend = audio_backend::find(None).ok_or(crate::Error::NoAudioBackend)?;
@@ -139,14 +162,7 @@ impl Engine {
             tokio::task::spawn_blocking(move || auth::stored_credentials(&cache)).await
         };
         if let Ok(Some(credentials)) = stored {
-            match Self::start(
-                &config.device_name,
-                sink.clone(),
-                cache.clone(),
-                credentials,
-            )
-            .await
-            {
+            match Self::start(&config, sink.clone(), cache.clone(), credentials).await {
                 Err(crate::Error::Spotify(error)) if rejects_credentials(&error) => {
                     log::warn!("stored credentials were rejected, signing in again: {error}");
                 }
@@ -154,11 +170,11 @@ impl Engine {
             }
         }
         let credentials = auth::browser_login().await?;
-        Self::start(&config.device_name, sink, cache, credentials).await
+        Self::start(&config, sink, cache, credentials).await
     }
 
     async fn start(
-        device_name: &str,
+        config: &Config,
         sink: SinkFactory,
         cache: Cache,
         credentials: Credentials,
@@ -168,8 +184,12 @@ impl Engine {
 
         let mixer = mixer::find(None).ok_or(crate::Error::NoAudioBackend)?(MixerConfig::default())?;
         let player_config = PlayerConfig {
-            // The highest quality librespot can stream: 320 kbps Ogg Vorbis.
-            bitrate: Bitrate::Bitrate320,
+            bitrate: match config.quality {
+                Quality::Low => Bitrate::Bitrate96,
+                Quality::Normal => Bitrate::Bitrate160,
+                Quality::VeryHigh => Bitrate::Bitrate320,
+            },
+            normalisation: config.normalise,
             position_update_interval: Some(Duration::from_secs(1)),
             ..PlayerConfig::default()
         };
@@ -186,7 +206,7 @@ impl Engine {
 
         let (own_clusters_tx, own_clusters) = mpsc::unbounded_channel();
         let connect_config = ConnectConfig {
-            name: device_name.into(),
+            name: config.device_name.clone(),
             device_type: DeviceType::Computer,
             initial_volume,
             emit_set_queue_events: true,

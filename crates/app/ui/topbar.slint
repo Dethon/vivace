@@ -1,5 +1,5 @@
 import { Theme, Icons, Icon, IconButton } from "theme.slint";
-import { Nav } from "types.slint";
+import { Nav, SettingsView } from "types.slint";
 
 export component TopBar inherits Rectangle {
     // Moves keyboard focus to the search field.
@@ -87,6 +87,19 @@ export component TopBar inherits Rectangle {
 
         Rectangle {
             horizontal-stretch: 1;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            IconButton {
+                icon: Icons.settings;
+                icon-size: 20px;
+                active: SettingsView.visible;
+                clicked => {
+                    Nav.open-settings();
+                }
+            }
         }
     }
 }

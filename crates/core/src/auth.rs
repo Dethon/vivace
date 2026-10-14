@@ -97,6 +97,20 @@ pub(crate) fn protect_credentials() {
     }
 }
 
+/// Forgets the saved login, so the next connection asks for it in the browser.
+pub fn sign_out() {
+    if let Some(entry) = keyring_entry() {
+        // There is nothing to delete when the login was kept in the file.
+        _ = entry.delete_credential();
+    }
+    if let Ok(path) = data_dir().map(|directory| directory.join(CREDENTIALS_FILE))
+        && let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("couldn't remove {}: {error}", path.display());
+    }
+}
+
 fn keyring_entry() -> Option<keyring::Entry> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok()
 }
