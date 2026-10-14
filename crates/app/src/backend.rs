@@ -62,6 +62,15 @@ pub enum Request {
         playlist: Id,
         track: Id,
     },
+    RenamePlaylist {
+        playlist: Id,
+        name: String,
+    },
+    /// Takes a playlist out of the library, which deletes one the user owns.
+    RemovePlaylist {
+        playlist: Id,
+        name: String,
+    },
     /// Moves playback to a device; `local` when it is this computer.
     Transfer {
         device: Box<str>,
@@ -113,9 +122,13 @@ pub enum Update {
         track: Id,
         lyrics: Option<Lyrics>,
     },
-    /// Liking or unliking a track failed and must be undone on screen.
     /// A playlist was edited; `notice` says how.
     PlaylistChanged {
+        playlist: Id,
+        notice: String,
+    },
+    /// A playlist left the library.
+    PlaylistRemoved {
         playlist: Id,
         notice: String,
     },
@@ -331,6 +344,32 @@ impl Session {
                             notice: format!("Added to {name}"),
                         },
                         Err(error) => Update::Notice(format!("Couldn't add to {name}: {error}")),
+                    }
+                });
+                Ok(())
+            }
+            Request::RenamePlaylist { playlist, name } => {
+                self.spawn(move |api, _| async move {
+                    match api.rename_playlist(playlist, &name).await {
+                        Ok(()) => Update::PlaylistChanged {
+                            playlist,
+                            notice: format!("Renamed to {name}"),
+                        },
+                        Err(error) => {
+                            Update::Notice(format!("Couldn't rename the playlist: {error}"))
+                        }
+                    }
+                });
+                Ok(())
+            }
+            Request::RemovePlaylist { playlist, name } => {
+                self.spawn(move |api, _| async move {
+                    match api.remove_playlist(playlist).await {
+                        Ok(()) => Update::PlaylistRemoved {
+                            playlist,
+                            notice: format!("Removed {name}"),
+                        },
+                        Err(error) => Update::Notice(format!("Couldn't remove {name}: {error}")),
                     }
                 });
                 Ok(())

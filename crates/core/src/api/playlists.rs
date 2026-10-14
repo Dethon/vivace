@@ -52,6 +52,11 @@ impl Api {
         Ok(playlist)
     }
 
+    pub async fn rename_playlist(&self, playlist: Id, name: &str) -> Result<()> {
+        self.change(&playlist_changes(playlist), renamed(name))
+            .await
+    }
+
     /// Appends tracks to a playlist the user can edit.
     pub async fn add_to_playlist(&self, playlist: Id, tracks: &[Id]) -> Result<()> {
         let mut add = Add::new();

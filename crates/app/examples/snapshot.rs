@@ -98,6 +98,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cover(index as u32 + 20, 40)
             },
             liked_songs: index == 0,
+            owned: index % 2 == 1,
+            removable: index > 0,
             selected: index == 1,
         })
         .collect();

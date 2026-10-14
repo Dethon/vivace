@@ -60,6 +60,10 @@ export struct LibraryItem {
     cover: image,
     liked-songs: bool,
     selected: bool,
+    // A playlist the user owns: it can be renamed and deleted.
+    owned: bool,
+    // A playlist that can be taken out of the library.
+    removable: bool,
 }
 
 export enum RepeatMode { off, all, one }
@@ -143,6 +147,21 @@ export global Nav {
 export global Library {
     in property <[LibraryItem]> items;
     callback open(int);
+    // Ask to rename, or to delete or unfollow, the playlist at this index.
+    callback rename(int);
+    callback remove(int);
+}
+
+// The one modal question the window can show at a time.
+export global Dialog {
+    in-out property <bool> visible;
+    in property <string> title;
+    in property <string> message;
+    // Whether the answer is typed; `text` is its initial and final value.
+    in property <bool> has-input;
+    in-out property <string> text;
+    in property <string> confirm-label;
+    callback confirmed(string);
 }
 
 export global Queue {

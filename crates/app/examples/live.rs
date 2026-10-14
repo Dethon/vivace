@@ -5,8 +5,8 @@
 //!
 //!   cargo run -p vivace --example live -- <output directory>
 //!
-//! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page and
-//! adds a track to a new playlist, to exercise playlist editing. With
+//! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page,
+//! adds a track to a new playlist, renames that playlist and deletes it. With
 //! `LIVE_NO_PLAYBACK=1` it only browses, leaving other devices undisturbed.
 
 use std::cell::{Cell, RefCell};
@@ -27,8 +27,10 @@ use slint::platform::software_renderer::{
 };
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, EventLoopError, Model, PhysicalSize, PlatformError};
-use vivace::{App, Config, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind};
+use vivace::{App, Config, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind};
 
+// What the playlist-editing scenario renames its playlist to before deleting it.
+const TEST_PLAYLIST: &str = "Vivace live test";
 // Name fragments of the steps that start, pause or seek playback.
 const PLAYING_STEPS: [&str; 4] = ["playing", "paused", "lyrics", "stopped"];
 const WIDTH: u32 = 1280;
@@ -249,10 +251,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Opt-in because it writes to the account: adds the playlist page's first
-    // track to a new playlist, which then has to be deleted by hand or with
-    // `cli delete-playlist`.
+    // track to a new playlist, renames that playlist and deletes it. If a
+    // step fails, remove what is left with `cli delete-playlist`.
     let mut steps = steps;
     if std::env::var_os("LIVE_PLAYLIST_EDIT").is_some() {
+        // The test playlist is named after the track it is made from; it is
+        // looked up by its later names so no other playlist is ever touched.
+        let library_index = |ui: &MainWindow, name: &str| {
+            let items = ui.global::<Library>().get_items();
+            items
+                .iter()
+                .position(|item| item.title == name && item.owned)
+                .map(|index| index as i32)
+        };
         steps.truncate(2);
         steps.push((
             "3-added-to-new-playlist",
@@ -260,6 +271,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(move |ui| {
                 let row = first_row(ui, RowKind::Track);
                 ui.global::<Nav>().invoke_add_to_playlist(row, -1);
+            }),
+        ));
+        steps.push((
+            "4-rename-dialog",
+            1000,
+            Box::new(move |ui| {
+                let rows = ui.global::<Nav>().get_rows();
+                let created = rows
+                    .iter()
+                    .find(|row| row.kind == RowKind::Track)
+                    .map(|row| row.track.title);
+                match created.and_then(|name| library_index(ui, &name)) {
+                    Some(index) => ui.global::<Library>().invoke_rename(index),
+                    None => println!("the new playlist is not in the library"),
+                }
+            }),
+        ));
+        steps.push((
+            "5-renamed",
+            4000,
+            Box::new(|ui| {
+                if ui.global::<Dialog>().get_visible() {
+                    ui.global::<Dialog>().invoke_confirmed(TEST_PLAYLIST.into());
+                }
+            }),
+        ));
+        steps.push((
+            "6-delete-dialog",
+            1000,
+            Box::new(move |ui| match library_index(ui, TEST_PLAYLIST) {
+                Some(index) => ui.global::<Library>().invoke_remove(index),
+                None => println!("the renamed playlist is not in the library"),
+            }),
+        ));
+        steps.push((
+            "7-deleted",
+            4000,
+            Box::new(|ui| {
+                if ui.global::<Dialog>().get_visible() {
+                    ui.global::<Dialog>().invoke_confirmed("".into());
+                }
             }),
         ));
     }

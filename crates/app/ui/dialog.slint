@@ -1,0 +1,123 @@
+import { Theme } from "theme.slint";
+import { Dialog } from "types.slint";
+
+component DialogButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    callback clicked();
+
+    width: text.preferred-width + 40px;
+    height: 36px;
+    border-radius: 18px;
+    background: root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent) : (touch.has-hover ? Theme.surface-hover : transparent);
+
+    text := Text {
+        text: root.label;
+        color: root.primary ? Theme.on-accent : Theme.text;
+        font-size: 14px;
+        font-weight: 700;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// A question over the whole window: a confirmation, or a single text field.
+export component DialogOverlay inherits Rectangle {
+    background: #000000a0;
+
+    init => {
+        if Dialog.has-input {
+            input.focus();
+            input.select-all();
+        }
+    }
+
+    // Swallows clicks so nothing underneath reacts.
+    TouchArea { }
+
+    FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                Dialog.visible = false;
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            width: min(420px, root.width - 48px);
+            height: card.preferred-height;
+            border-radius: 12px;
+            background: Theme.surface-active;
+
+            card := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+
+                Text {
+                    text: Dialog.title;
+                    color: Theme.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    wrap: word-wrap;
+                }
+
+                if Dialog.message != "": Text {
+                    text: Dialog.message;
+                    color: Theme.text-muted;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                }
+
+                Rectangle {
+                    visible: Dialog.has-input;
+                    height: Dialog.has-input ? 40px : 0;
+                    border-radius: Theme.radius;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: input.has-focus ? Theme.text-muted : Theme.divider;
+
+                    input := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: 20px;
+                        text <=> Dialog.text;
+                        color: Theme.text;
+                        font-size: 14px;
+                        single-line: true;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                        accepted => {
+                            Dialog.confirmed(self.text);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    DialogButton {
+                        label: "Cancel";
+                        clicked => {
+                            Dialog.visible = false;
+                        }
+                    }
+
+                    DialogButton {
+                        label: Dialog.confirm-label;
+                        primary: true;
+                        clicked => {
+                            Dialog.confirmed(Dialog.text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

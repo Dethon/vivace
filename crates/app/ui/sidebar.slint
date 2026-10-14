@@ -48,50 +48,78 @@ component NavButton inherits Rectangle {
 component LibraryRow inherits Rectangle {
     in property <LibraryItem> item;
     callback clicked();
+    callback rename();
+    callback remove();
 
     height: 56px;
     border-radius: Theme.radius;
     background: root.item.selected ? Theme.surface-active : touch.has-hover ? Theme.surface-hover : transparent;
 
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 12px;
+    area := ContextMenuArea {
+        enabled: root.item.removable;
 
-        VerticalLayout {
-            alignment: center;
+        Menu {
+            if root.item.owned: MenuItem {
+                title: "Rename";
+                activated => {
+                    root.rename();
+                }
+            }
 
-            Cover {
-                source: root.item.cover;
-                size: 40px;
-                liked-songs: root.item.liked-songs;
+            MenuItem {
+                title: root.item.owned ? "Delete" : "Remove from Your Library";
+                activated => {
+                    root.remove();
+                }
             }
         }
 
-        VerticalLayout {
-            alignment: center;
-            spacing: 2px;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 12px;
 
-            Text {
-                text: root.item.title;
-                color: Theme.text;
-                font-size: 14px;
-                overflow: elide;
+            VerticalLayout {
+                alignment: center;
+
+                Cover {
+                    source: root.item.cover;
+                    size: 40px;
+                    liked-songs: root.item.liked-songs;
+                }
             }
 
-            Text {
-                text: root.item.subtitle;
-                color: Theme.text-muted;
-                font-size: 12px;
-                overflow: elide;
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+
+                Text {
+                    text: root.item.title;
+                    color: Theme.text;
+                    font-size: 14px;
+                    overflow: elide;
+                }
+
+                Text {
+                    text: root.item.subtitle;
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    overflow: elide;
+                }
             }
         }
-    }
 
-    touch := TouchArea {
-        mouse-cursor: pointer;
-        clicked => {
-            root.clicked();
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.clicked();
+            }
+            // The touch area takes the click before the menu area sees it.
+            pointer-event(event) => {
+                if root.item.removable && event.button == PointerEventButton.right && event.kind == PointerEventKind.up {
+                    area.show({ x: self.mouse-x, y: self.mouse-y });
+                }
+            }
         }
     }
 }
@@ -131,6 +159,12 @@ export component Sidebar inherits Rectangle {
                 item: item;
                 clicked => {
                     Library.open(index);
+                }
+                rename => {
+                    Library.rename(index);
+                }
+                remove => {
+                    Library.remove(index);
                 }
             }
         }

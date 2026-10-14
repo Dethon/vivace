@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Player, Nav, Library, Queue, LyricsView, Devices, Session } from "types.slint";
+import { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { TopBar } from "topbar.slint";
 import { PageView } from "page.slint";
@@ -7,8 +7,9 @@ import { PlayerBar } from "player-bar.slint";
 import { QueuePanel } from "queue.slint";
 import { LyricsPanel } from "lyrics.slint";
 import { AppIcon } from "icon.slint";
+import { DialogOverlay } from "dialog.slint";
 
-export { Player, Nav, Library, Queue, LyricsView, Devices, Session, AppIcon }
+export { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog, AppIcon }
 
 export component MainWindow inherits Window {
     // Set at startup from the bundled PNG.
@@ -99,6 +100,8 @@ export component MainWindow inherits Window {
 
             PlayerBar { }
         }
+
+        if Dialog.visible: DialogOverlay { }
 
         if Session.notice != "": Rectangle {
             y: root.height - 80px - 8px - self.height;

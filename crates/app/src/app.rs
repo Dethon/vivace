@@ -13,9 +13,9 @@ use vivace_core::{
 };
 
 use crate::{
-    CardData, DeviceIcon, DeviceItem, Devices, HeaderData, Library, LibraryItem, LyricsView,
-    MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, TrackAction,
-    TrackData,
+    CardData, DeviceIcon, DeviceItem, Devices, Dialog, HeaderData, Library, LibraryItem,
+    LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session,
+    TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
     content::{Card, Page, PageData, Saveable, Section},
     format,
@@ -97,6 +97,8 @@ struct State {
     /// both "still loading" and "has none".
     lyrics: Option<(Id, Option<Lyrics>)>,
     devices: Vec<Device>,
+    /// What the open dialog is asking, to act on when it is confirmed.
+    question: Option<Question>,
     /// Id of the other device that is playing, if one is.
     remote: Option<Box<str>>,
 }
@@ -132,6 +134,12 @@ impl State {
             Saveable::Album(id) | Saveable::Artist(id) => self.saved.contains(&id),
         }
     }
+}
+
+enum Question {
+    Rename(Id),
+    /// Remove a playlist, named for the confirmation message.
+    Remove(Id, String),
 }
 
 struct Visit {
@@ -203,6 +211,7 @@ impl App {
                 started: None,
                 lyrics: None,
                 devices: Vec::new(),
+                question: None,
                 remote: None,
             }),
             playlist_covers: RefCell::default(),
@@ -336,6 +345,32 @@ impl App {
             move |index| {
                 if let Some(app) = app.upgrade() {
                     app.transfer(index as usize);
+                }
+            }
+        });
+
+        let library = ui.global::<Library>();
+        library.on_rename({
+            let app = Rc::downgrade(self);
+            move |index| {
+                if let Some(app) = app.upgrade() {
+                    app.ask_about_playlist(index as usize, true);
+                }
+            }
+        });
+        library.on_remove({
+            let app = Rc::downgrade(self);
+            move |index| {
+                if let Some(app) = app.upgrade() {
+                    app.ask_about_playlist(index as usize, false);
+                }
+            }
+        });
+        ui.global::<Dialog>().on_confirmed({
+            let app = Rc::downgrade(self);
+            move |text| {
+                if let Some(app) = app.upgrade() {
+                    app.dialog_confirmed(text.trim());
                 }
             }
         });
@@ -481,6 +516,14 @@ impl App {
                 // Reload the playlist if it is the one on screen.
                 if *self.state.borrow().current_page() == Page::Playlist(playlist) {
                     self.show_current();
+                }
+            }
+            Update::PlaylistRemoved { playlist, notice } => {
+                self.notice(&notice);
+                self.request(Request::Library);
+                // Its page has nothing left to show.
+                if *self.state.borrow().current_page() == Page::Playlist(playlist) {
+                    self.open(Page::Home);
                 }
             }
             Update::Connected { username } => {
@@ -1271,6 +1314,73 @@ impl App {
         }
     }
 
+    /// Opens the dialog to rename the playlist at a library index, or to
+    /// confirm taking it out of the library.
+    fn ask_about_playlist(&self, index: usize, rename: bool) {
+        let (playlist, name, owned) = {
+            let state = self.state.borrow();
+            let Some(playlist) = index
+                .checked_sub(1)
+                .and_then(|index| state.playlists.get(index))
+            else {
+                return;
+            };
+            (
+                playlist.id,
+                playlist.name.to_string(),
+                *playlist.owner == *state.username,
+            )
+        };
+        let question = if rename {
+            Question::Rename(playlist)
+        } else {
+            Question::Remove(playlist, name.clone())
+        };
+        self.state.borrow_mut().question = Some(question);
+        self.with_ui(|ui| {
+            let dialog = ui.global::<Dialog>();
+            dialog.set_has_input(rename);
+            dialog.set_text(if rename {
+                name.as_str().into()
+            } else {
+                SharedString::default()
+            });
+            if rename {
+                dialog.set_title("Rename playlist".into());
+                dialog.set_message(SharedString::default());
+                dialog.set_confirm_label("Save".into());
+            } else if owned {
+                dialog.set_title(format!("Delete {name}?").into());
+                dialog
+                    .set_message("Spotify keeps deleted playlists recoverable for a while.".into());
+                dialog.set_confirm_label("Delete".into());
+            } else {
+                dialog.set_title(format!("Remove {name} from Your Library?").into());
+                dialog.set_message(SharedString::default());
+                dialog.set_confirm_label("Remove".into());
+            }
+            dialog.set_visible(true);
+        });
+    }
+
+    /// Carries out what the dialog asked about; `text` is the typed answer.
+    fn dialog_confirmed(&self, text: &str) {
+        self.with_ui(|ui| ui.global::<Dialog>().set_visible(false));
+        let question = self.state.borrow_mut().question.take();
+        match question {
+            Some(Question::Rename(playlist)) if !text.is_empty() => {
+                self.request(Request::RenamePlaylist {
+                    playlist,
+                    name: text.to_owned(),
+                })
+            }
+            Some(Question::Remove(playlist, name)) => {
+                self.request(Request::RemovePlaylist { playlist, name })
+            }
+            Some(Question::Rename(_)) | None => {}
+        }
+    }
+
     /// Adds the track in `row` to an editable playlist, or to a new one
     /// named after the track when `choice` is negative.
     fn add_to_playlist(&self, row: usize, choice: i32) {
@@ -1551,6 +1661,8 @@ impl App {
                 cover: slint::Image::default(),
                 liked_songs: true,
                 selected: *current == Page::Liked,
+                owned: false,
+                removable: false,
             },
             Some(index) => {
                 let playlist = state.playlists.get(index)?;
@@ -1563,6 +1675,8 @@ impl App {
                     ),
                     liked_songs: false,
                     selected: *current == Page::Playlist(playlist.id),
+                    owned: *playlist.owner == *state.username,
+                    removable: true,
                 }
             }
         })
