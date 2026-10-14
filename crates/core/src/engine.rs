@@ -57,6 +57,30 @@ pub enum Quality {
     VeryHigh,
 }
 
+/// How loud normalised playback is, as Spotify's apps offer it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VolumeLevel {
+    /// About -19 LUFS, for noisy surroundings turned down.
+    Quiet,
+    /// About -14 LUFS, Spotify's reference.
+    #[default]
+    Normal,
+    /// About -11 LUFS.
+    Loud,
+}
+
+impl VolumeLevel {
+    /// The gain over Spotify's reference loudness.
+    fn pregain_db(self) -> f64 {
+        match self {
+            VolumeLevel::Quiet => -5.0,
+            VolumeLevel::Normal => 0.0,
+            VolumeLevel::Loud => 3.0,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     /// Name shown in Spotify's device picker.
@@ -64,6 +88,12 @@ pub struct Config {
     pub quality: Quality,
     /// Even out loudness between tracks.
     pub normalise: bool,
+    /// How loud normalised tracks play.
+    pub volume_level: VolumeLevel,
+    /// Start the next track without a gap.
+    pub gapless: bool,
+    /// Go on with similar songs when what was playing ends.
+    pub autoplay: bool,
     /// Keep the same Connect device id across runs. Tools that run next to
     /// the app turn this off so they show up as a device of their own.
     pub persistent_device: bool,
@@ -89,6 +119,9 @@ impl Default for Config {
             device_name: Self::default_device_name(),
             quality: Quality::default(),
             normalise: false,
+            volume_level: VolumeLevel::default(),
+            gapless: true,
+            autoplay: true,
             persistent_device: true,
             sink: None,
         }
@@ -203,7 +236,10 @@ impl Engine {
         credentials: Credentials,
     ) -> Result<(Self, Events)> {
         let initial_volume = cache.volume().unwrap_or(DEFAULT_VOLUME);
-        let mut session_config = SessionConfig::default();
+        let mut session_config = SessionConfig {
+            autoplay: Some(config.autoplay),
+            ..SessionConfig::default()
+        };
         if config.persistent_device
             && let Some(device_id) = auth::device_id(&session_config.device_id)
         {
@@ -219,6 +255,8 @@ impl Engine {
                 Quality::VeryHigh => Bitrate::Bitrate320,
             },
             normalisation: config.normalise,
+            normalisation_pregain_db: config.volume_level.pregain_db(),
+            gapless: config.gapless,
             position_update_interval: Some(Duration::from_secs(1)),
             ..PlayerConfig::default()
         };

@@ -14,6 +14,7 @@ pub use auth::{data_dir, sign_out};
 pub use connect::{Connect, Device, DeviceKind, Remote};
 pub use engine::{
     Config, Engine, Event, Events, Playback, Quality, Queue, QueueItem, Repeat, SinkFactory, Start,
+    VolumeLevel,
 };
 
 // Tokio reads this when a runtime is built without an explicit size.

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use vivace_core::{Config, Quality};
+use vivace_core::{Config, Quality, VolumeLevel};
 
 use crate::library::Sort;
 
@@ -18,6 +18,9 @@ pub struct Settings {
     pub window: Option<WindowState>,
     pub quality: Quality,
     pub normalise: bool,
+    pub volume_level: VolumeLevel,
+    pub gapless: bool,
+    pub autoplay: bool,
     /// Name this computer has in Spotify's device list, when the user chose
     /// one; see [`Settings::device_name`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,6 +39,10 @@ impl Default for Settings {
             window: None,
             quality: Quality::default(),
             normalise: false,
+            volume_level: VolumeLevel::default(),
+            // As in Spotify's apps.
+            gapless: true,
+            autoplay: true,
             device_name: None,
             close_to_tray: false,
             // As in Spotify's Linux app.
@@ -96,8 +103,18 @@ impl Settings {
 
     /// Whether the two differ in something the engine has to restart for.
     pub fn config_differs(&self, other: &Self) -> bool {
-        (self.quality, self.normalise, self.device_name())
-            != (other.quality, other.normalise, other.device_name())
+        self.config_key() != other.config_key()
+    }
+
+    fn config_key(&self) -> (Quality, bool, VolumeLevel, bool, bool, String) {
+        (
+            self.quality,
+            self.normalise,
+            self.volume_level,
+            self.gapless,
+            self.autoplay,
+            self.device_name(),
+        )
     }
 
     /// The engine configuration these settings ask for.
@@ -106,6 +123,9 @@ impl Settings {
             device_name: self.device_name(),
             quality: self.quality,
             normalise: self.normalise,
+            volume_level: self.volume_level,
+            gapless: self.gapless,
+            autoplay: self.autoplay,
             persistent_device: true,
             sink: None,
         }
@@ -142,6 +162,9 @@ mod tests {
             }),
             quality: Quality::Normal,
             normalise: true,
+            volume_level: VolumeLevel::Loud,
+            gapless: false,
+            autoplay: false,
             device_name: Some("Study".into()),
             close_to_tray: true,
             notify_song_changes: false,

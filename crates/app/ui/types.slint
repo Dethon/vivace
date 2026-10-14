@@ -193,6 +193,10 @@ export global SettingsView {
     // 0 low, 1 normal, 2 very high.
     in property <int> quality: 2;
     in property <bool> normalise;
+    // 0 quiet, 1 normal, 2 loud.
+    in property <int> volume-level: 1;
+    in property <bool> gapless: true;
+    in property <bool> autoplay: true;
     in property <string> device-name;
     in property <bool> start-at-login;
     // Whether this system has a tray to close the window to.
@@ -206,6 +210,9 @@ export global SettingsView {
     in property <string> data-folder;
     callback set-quality(int);
     callback set-normalise(bool);
+    callback set-volume-level(int);
+    callback set-gapless(bool);
+    callback set-autoplay(bool);
     callback set-device-name(string);
     callback set-start-at-login(bool);
     callback set-close-to-tray(bool);

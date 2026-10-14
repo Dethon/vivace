@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Config, Connect, Device, DeviceKind, Playback, Quality, Repeat, Start,
+    Config, Connect, Device, DeviceKind, Playback, Quality, Repeat, Start, VolumeLevel,
     model::{Id, Image, Lyrics, Playlist, Progress, Track},
 };
 
@@ -397,6 +397,35 @@ impl App {
             move |name| {
                 if let Some(app) = app.upgrade() {
                     app.change_settings(|settings| settings.set_device_name(&name));
+                }
+            }
+        });
+        settings.on_set_volume_level({
+            let app = Rc::downgrade(self);
+            move |level| {
+                let level = match level {
+                    0 => VolumeLevel::Quiet,
+                    2 => VolumeLevel::Loud,
+                    _ => VolumeLevel::Normal,
+                };
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.volume_level = level);
+                }
+            }
+        });
+        settings.on_set_gapless({
+            let app = Rc::downgrade(self);
+            move |on| {
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.gapless = on);
+                }
+            }
+        });
+        settings.on_set_autoplay({
+            let app = Rc::downgrade(self);
+            move |on| {
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.autoplay = on);
                 }
             }
         });
@@ -1803,6 +1832,13 @@ impl App {
                 Quality::VeryHigh => 2,
             });
             view.set_normalise(settings.normalise);
+            view.set_volume_level(match settings.volume_level {
+                VolumeLevel::Quiet => 0,
+                VolumeLevel::Normal => 1,
+                VolumeLevel::Loud => 2,
+            });
+            view.set_gapless(settings.gapless);
+            view.set_autoplay(settings.autoplay);
             view.set_device_name(settings.device_name().into());
             view.set_start_at_login(system::starts_at_login());
             view.set_close_to_tray(settings.close_to_tray && tray::SUPPORTED);

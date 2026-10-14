@@ -157,6 +157,56 @@ export component SettingsPage inherits Rectangle {
                 }
             }
 
+            if SettingsView.normalise: Setting {
+                title: "Volume level";
+                detail: "How loud normalised tracks play; loud may cost some dynamic range. Changing this restarts playback.";
+
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 8px;
+
+                    for label[index] in ["Quiet", "Normal", "Loud"]: Choice {
+                        label: label;
+                        selected: SettingsView.volume-level == index;
+                        clicked => {
+                            SettingsView.set-volume-level(index);
+                        }
+                    }
+                }
+            }
+
+            Setting {
+                title: "Gapless playback";
+                detail: "Starts the next track with no silence between them. Changing this restarts playback.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.gapless;
+                        toggled => {
+                            SettingsView.set-gapless(!SettingsView.gapless);
+                        }
+                    }
+                }
+            }
+
+            Setting {
+                title: "Autoplay";
+                detail: "Keeps playing similar songs when what you play ends. Changing this restarts playback.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.autoplay;
+                        toggled => {
+                            SettingsView.set-autoplay(!SettingsView.autoplay);
+                        }
+                    }
+                }
+            }
+
             Setting {
                 title: "Device name";
                 detail: "How this computer appears in Spotify's device list. Press Enter to apply; leave it empty for the default name.";
