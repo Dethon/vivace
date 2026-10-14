@@ -6,6 +6,7 @@
 //! settings page; `SNAPSHOT_CLICK=x,y` and
 //! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup;
 //! `SNAPSHOT_HOVER=x,y` wiggles the pointer there to show hover state.
+//! `SNAPSHOT_CHAPTERS=1` gives the playing item chapter marks.
 //! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
 
 use std::rc::Rc;
@@ -235,6 +236,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     player.set_volume(0.7);
     player.set_shuffle(true);
     player.set_repeat(RepeatMode::One);
+    if std::env::var_os("SNAPSHOT_CHAPTERS").is_some() {
+        const CHAPTERS: [(i32, &str); 5] = [
+            (0, "Introduction"),
+            (41_000, "Sponsors, comments and reflections"),
+            (120_000, "Programming with AI agents"),
+            (205_000, "How software will change"),
+            (290_000, "Closing thoughts"),
+        ];
+        let starts: Vec<i32> = CHAPTERS.iter().map(|(start, _)| *start).collect();
+        player.set_chapters(ModelRc::from(starts.as_slice()));
+        player.on_chapter_title(|position| {
+            let playing = CHAPTERS.partition_point(|(start, _)| *start <= position);
+            CHAPTERS[playing.saturating_sub(1)].1.into()
+        });
+    }
 
     let queue = ui.global::<Queue>();
     queue.set_visible(std::env::var_os("SNAPSHOT_QUEUE").is_some());

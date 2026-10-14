@@ -9,7 +9,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Config, Connect, Device, DeviceKind, Playback, Quality, Repeat, Start, VolumeLevel,
-    model::{Id, Image, Lyrics, Playlist, Progress, Track},
+    model::{Chapter, Id, Image, Lyrics, Playlist, Progress, Track},
 };
 
 use crate::{
@@ -123,6 +123,8 @@ struct State {
     /// Lyrics of the playing track once requested; the inner `None` covers
     /// both "still loading" and "has none".
     lyrics: Option<(Id, Option<Lyrics>)>,
+    /// Chapters of the playing episode, in order.
+    chapters: Vec<Chapter>,
     devices: Vec<Device>,
     /// What the open dialog is asking, to act on when it is confirmed.
     question: Option<Question>,
@@ -251,6 +253,7 @@ impl App {
                 queue_sequence: 0,
                 started: None,
                 lyrics: None,
+                chapters: Vec::new(),
                 devices: Vec::new(),
                 question: None,
                 remote: None,
@@ -695,6 +698,14 @@ impl App {
                 }
             }
         });
+        player.on_chapter_title({
+            let app = Rc::downgrade(self);
+            move |position_ms| {
+                app.upgrade()
+                    .map(|app| app.chapter_title(position_ms.max(0) as u32))
+                    .unwrap_or_default()
+            }
+        });
         player.on_set_volume({
             let app = Rc::downgrade(self);
             move |volume| {
@@ -882,6 +893,7 @@ impl App {
             Update::Media(command) => self.media_command(command),
             Update::Position(position_ms) => self.show_position(position_ms),
             Update::Lyrics { track, lyrics } => self.lyrics_loaded(track, lyrics),
+            Update::Chapters { episode, chapters } => self.chapters_loaded(episode, chapters),
             Update::Stopped => {
                 self.state.borrow_mut().playing = false;
                 self.with_ui(|ui| ui.global::<Player>().set_playing(false));
@@ -1094,6 +1106,9 @@ impl App {
             media.set_track(&track, &artist_names(&track));
         }
         self.load_lyrics();
+        if previous != Some(track.id) {
+            self.load_chapters(&track);
+        }
         self.show_player_liked();
         for id in previous.into_iter().chain([track.id]) {
             self.refresh_track(id);
@@ -1203,6 +1218,46 @@ impl App {
             }
         });
         self.follow_lyrics();
+    }
+
+    /// Clears the previous item's chapter marks and asks for the episode's.
+    fn load_chapters(&self, track: &Track) {
+        self.state.borrow_mut().chapters.clear();
+        self.with_ui(|ui| ui.global::<Player>().set_chapters(ModelRc::default()));
+        if track.is_episode() {
+            self.request(Request::Chapters(track.id));
+        }
+    }
+
+    fn chapters_loaded(&self, episode: Id, chapters: Vec<Chapter>) {
+        let starts: Vec<i32> = {
+            let mut state = self.state.borrow_mut();
+            // Another item started while they were on their way.
+            if state.now_playing.as_ref().map(|playing| playing.id) != Some(episode) {
+                return;
+            }
+            state.chapters = chapters;
+            state
+                .chapters
+                .iter()
+                .map(|chapter| chapter.start_ms as i32)
+                .collect()
+        };
+        self.with_ui(|ui| {
+            ui.global::<Player>()
+                .set_chapters(ModelRc::from(starts.as_slice()));
+        });
+    }
+
+    fn chapter_title(&self, position_ms: u32) -> SharedString {
+        let state = self.state.borrow();
+        let playing = state
+            .chapters
+            .partition_point(|chapter| chapter.start_ms <= position_ms);
+        playing
+            .checked_sub(1)
+            .map(|index| state.chapters[index].title.as_ref().into())
+            .unwrap_or_default()
     }
 
     /// Highlights the line being sung and wakes up again for the next one.

@@ -6,7 +6,7 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, Image, ItemRef, Kind, Lyrics, Progress, Saved, Track},
+    model::{Chapter, Id, Image, ItemRef, Kind, Lyrics, Progress, Saved, Track},
 };
 
 use crate::{
@@ -57,6 +57,8 @@ pub enum Request {
     Volume(f32),
     AddToQueue(ItemRef),
     Lyrics(Id),
+    /// Chapters of an episode.
+    Chapters(Id),
     /// Adds a track to a playlist; without one, to a new playlist called `name`.
     AddToPlaylist {
         playlist: Option<Id>,
@@ -141,6 +143,11 @@ pub enum Update {
     Lyrics {
         track: Id,
         lyrics: Option<Lyrics>,
+    },
+    /// An episode's chapters; empty when it has none.
+    Chapters {
+        episode: Id,
+        chapters: Vec<Chapter>,
     },
     /// A playlist was edited; `notice` says how.
     PlaylistChanged {
@@ -399,6 +406,16 @@ impl Session {
                         None
                     });
                     Update::Lyrics { track, lyrics }
+                });
+                Ok(())
+            }
+            Request::Chapters(episode) => {
+                self.spawn(move |api, _| async move {
+                    let chapters = api.chapters(episode).await.unwrap_or_else(|error| {
+                        log::warn!("couldn't load chapters: {error}");
+                        Vec::new()
+                    });
+                    Update::Chapters { episode, chapters }
                 });
                 Ok(())
             }

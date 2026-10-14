@@ -239,11 +239,36 @@ export component PlayerBar inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                Bar {
+                progress := Bar {
                     value: Player.duration-ms > 0 ? Player.position-ms / Player.duration-ms : 0;
                     enabled: Player.available;
+                    marks: Player.chapters;
+                    scale: Player.duration-ms;
                     changed(fraction) => {
                         Player.seek(fraction * Player.duration-ms);
+                    }
+
+                    // The chapter under the pointer, as Spotify shows it.
+                    property <string> chapter: Player.chapters.length > 0 ? Player.chapter-title(self.pointer * Player.duration-ms) : "";
+
+                    if progress.hovered && progress.chapter != "": Rectangle {
+                        property <length> label-width: min(chapter-label.preferred-width + 16px, 320px);
+
+                        x: clamp(progress.width * progress.pointer - self.width / 2, -60px, progress.width - self.width + 60px);
+                        y: -self.height - 6px;
+                        width: self.label-width;
+                        height: 26px;
+                        border-radius: 4px;
+                        background: Theme.surface-active;
+
+                        chapter-label := Text {
+                            width: parent.width - 16px;
+                            text: progress.chapter;
+                            color: Theme.text;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            overflow: elide;
+                        }
                     }
                 }
 

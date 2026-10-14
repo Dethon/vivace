@@ -112,6 +112,8 @@ export global Player {
     in property <float> volume: 0.5;
     in property <bool> shuffle;
     in property <RepeatMode> repeat;
+    // Where the playing episode's chapters start.
+    in property <[int]> chapters;
 
     callback toggle();
     callback next();
@@ -123,6 +125,8 @@ export global Player {
     callback toggle-liked();
     callback open-album();
     callback open-artist();
+    // Title of the chapter playing at a position, or "" without chapters.
+    pure callback chapter-title(int) -> string;
 
     pure function two-digits(value: int) -> string {
         (value < 10 ? "0" : "") + value

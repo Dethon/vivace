@@ -309,6 +309,13 @@ pub struct LyricLine {
     pub text: Box<str>,
 }
 
+/// A titled part of an episode, as its publisher marked it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chapter {
+    pub start_ms: u32,
+    pub title: Box<str>,
+}
+
 /// A titled row of the home feed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shelf {

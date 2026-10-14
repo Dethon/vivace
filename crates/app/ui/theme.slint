@@ -142,6 +142,12 @@ export component Bar inherits Rectangle {
     // Report while dragging rather than only on release.
     in property <bool> live;
     in property <bool> enabled: true;
+    // Positions to mark along the bar, such as chapter starts, out of `scale`.
+    in property <[int]> marks;
+    in property <int> scale;
+    // Where the pointer is while it is over the bar.
+    out property <bool> hovered: touch.has-hover;
+    out property <float> pointer: self.dragged;
     callback changed(float);
 
     property <float> dragged: clamp(touch.mouse-x / self.width, 0, 1);
@@ -161,6 +167,15 @@ export component Bar inherits Rectangle {
             border-radius: 2px;
             background: root.highlighted ? Theme.accent : Theme.text;
         }
+    }
+
+    // A mark at the very start would only nick the bar's rounded end.
+    for mark in root.marks: Rectangle {
+        visible: root.scale > 0 && mark > 0 && mark < root.scale;
+        x: root.width * mark / max(root.scale, 1) - 1px;
+        width: 2px;
+        height: 4px;
+        background: Theme.background;
     }
 
     if root.highlighted: Rectangle {

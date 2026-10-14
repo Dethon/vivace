@@ -4,6 +4,7 @@
 //! token; the public Web API rejects that token with HTTP 429.
 
 mod catalog;
+mod chapters;
 mod graph;
 mod home;
 mod library;
