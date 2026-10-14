@@ -3,7 +3,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use http::{
     Method, Request, StatusCode,
-    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue},
+    header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue},
 };
 use http_body_util::BodyExt;
 use librespot_core::{Session, error::ErrorKind, http_client::HttpClient};
@@ -145,6 +145,11 @@ impl Transport {
             if let Some(content_type) = content_type {
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
                 headers.insert(ACCEPT, HeaderValue::from_static(content_type));
+            }
+            // Over HTTP/1.1, which the Windows build speaks, an empty body goes
+            // out without a length, and Spotify refuses that with 411.
+            if body.is_empty() && *method != Method::GET {
+                headers.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
             }
             if authorized {
                 // Both tokens are cached by the session and refreshed on expiry.

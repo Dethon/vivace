@@ -7,6 +7,7 @@
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
+//!   cli transfer <device id>     moves playback to another device
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
@@ -223,6 +224,10 @@ async fn run() -> Fallible<()> {
         ["remote-volume", device, volume] => {
             api.remote_volume(device, volume.parse()?).await?;
             println!("set {device} to {volume}");
+        }
+        ["transfer", device] => {
+            api.transfer(device).await?;
+            println!("moved playback to {device}");
         }
         ["episodes"] => {
             for saved in api.saved_episodes().await? {
