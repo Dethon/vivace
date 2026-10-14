@@ -18,7 +18,7 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, RemoteCommand, Repeat, Start,
+    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start,
     model::{Id, Kind, Track},
 };
 
@@ -287,8 +287,9 @@ impl Sink for Silence {
     }
 }
 
-/// Every few seconds acts on whatever another device is playing: pauses it,
-/// resumes it, and finally moves its playback to this computer.
+/// Every few seconds acts on whatever another device is playing: pauses and
+/// resumes it, starts an album and a track list on it, queues a track, and
+/// finally moves its playback to this computer.
 async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<()> {
     let api = engine.api();
     let deadline = tokio::time::sleep(Duration::from_secs(seconds));
@@ -313,6 +314,27 @@ async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<
                         api.remote(device, RemoteCommand::Resume).await?;
                     }
                     3 => {
+                        println!("-> play an album there, from its third track");
+                        let play = RemotePlay::Context {
+                            uri: "spotify:album:4m2880jivSbbyEGAKfITCa",
+                            start: Start::Track(Id::from_base62("0oks4FnzhNp5QPTZtoet7c")?),
+                        };
+                        api.remote_play(device, play, false, Repeat::Off).await?;
+                    }
+                    4 => {
+                        println!("-> queue a track there");
+                        api.remote_queue(device, Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?).await?;
+                    }
+                    5 => {
+                        println!("-> play a list of two tracks there, from the second");
+                        let tracks = [
+                            Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?,
+                            Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?,
+                        ];
+                        let play = RemotePlay::Tracks { tracks: &tracks, index: 1 };
+                        api.remote_play(device, play, false, Repeat::Off).await?;
+                    }
+                    6 => {
                         println!("-> take over playback");
                         engine.transfer_here()?;
                     }
@@ -323,8 +345,13 @@ async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<
                 Some(Event::Connect(connect)) => match connect.remote {
                     Some(remote) => {
                         println!(
-                            "remote: playing={} position={} track={:?} on {}",
-                            remote.playing, remote.position_ms, remote.queue.current, remote.device
+                            "remote: playing={} position={} track={:?} context={} next={} queued={}",
+                            remote.playing,
+                            remote.position_ms,
+                            remote.queue.current,
+                            remote.queue.context_uri,
+                            remote.queue.next.len(),
+                            remote.queue.next.iter().filter(|item| item.queued).count(),
                         );
                         device = Some(remote.device);
                     }

@@ -8,7 +8,7 @@ pub mod model;
 
 use std::time::Duration;
 
-pub use api::{Api, RemoteCommand, SavedItems};
+pub use api::{Api, RemoteCommand, RemotePlay, SavedItems};
 pub use auth::data_dir;
 pub use connect::{Connect, Device, DeviceKind, Remote};
 pub use engine::{

@@ -7,7 +7,11 @@ use protobuf::Message;
 use serde::Serialize;
 
 use super::{Api, transport::decode};
-use crate::Result;
+use crate::{
+    Repeat, Result, Start,
+    engine::QUEUE_PROVIDER,
+    model::{Id, Kind},
+};
 
 const JSON: &str = "application/json";
 const PROTOBUF: &str = "application/x-protobuf";
@@ -63,18 +67,196 @@ impl RemoteCommand {
     }
 }
 
+/// What to start on another device.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RemotePlay<'a> {
+    /// A playlist, album, artist or collection, by URI.
+    Context { uri: &'a str, start: Start },
+    /// An ad-hoc list of tracks, starting at `index`.
+    Tracks { tracks: &'a [Id], index: u32 },
+}
+
+// The shape Spotify's own clients send for `play`; field names are the
+// protobuf ones.
+#[derive(Serialize)]
+struct PlayEnvelope<'a> {
+    command: PlayCommand<'a>,
+}
+
+#[derive(Serialize)]
+struct PlayCommand<'a> {
+    endpoint: &'static str,
+    context: PlayContext<'a>,
+    play_origin: PlayOrigin,
+    options: PlayOptions,
+}
+
+#[derive(Serialize)]
+struct PlayContext<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uri: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pages: Vec<Page>,
+}
+
+#[derive(Serialize)]
+struct Page {
+    tracks: Vec<TrackRef>,
+}
+
+#[derive(Serialize)]
+struct TrackRef {
+    uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct PlayOrigin {
+    feature_identifier: &'static str,
+}
+
+#[derive(Serialize)]
+struct PlayOptions {
+    license: &'static str,
+    skip_to: SkipTo,
+    player_options_override: Modes,
+}
+
+#[derive(Serialize)]
+struct SkipTo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track_uri: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track_index: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct Modes {
+    shuffling_context: bool,
+    repeating_context: bool,
+    repeating_track: bool,
+}
+
+#[derive(Serialize)]
+struct QueueEnvelope {
+    command: QueueCommand,
+}
+
+#[derive(Serialize)]
+struct QueueCommand {
+    endpoint: &'static str,
+    track: TrackRef,
+}
+
+fn play_body(play: RemotePlay<'_>, shuffle: bool, repeat: Repeat) -> PlayEnvelope<'_> {
+    let (context, skip_to) = match play {
+        RemotePlay::Context { uri, start } => (
+            PlayContext {
+                uri: Some(uri),
+                url: Some(format!("context://{uri}")),
+                pages: Vec::new(),
+            },
+            match start {
+                Start::Beginning => SkipTo {
+                    track_uri: None,
+                    track_index: None,
+                },
+                Start::Index(index) => SkipTo {
+                    track_uri: None,
+                    track_index: Some(index),
+                },
+                Start::Track(track) => SkipTo {
+                    track_uri: Some(Kind::Track.uri(track)),
+                    track_index: None,
+                },
+            },
+        ),
+        RemotePlay::Tracks { tracks, index } => (
+            PlayContext {
+                uri: None,
+                url: None,
+                pages: vec![Page {
+                    tracks: tracks
+                        .iter()
+                        .map(|&track| TrackRef {
+                            uri: Kind::Track.uri(track),
+                            provider: None,
+                        })
+                        .collect(),
+                }],
+            },
+            SkipTo {
+                track_uri: None,
+                track_index: Some(index),
+            },
+        ),
+    };
+    PlayEnvelope {
+        command: PlayCommand {
+            endpoint: "play",
+            context,
+            play_origin: PlayOrigin {
+                feature_identifier: "vivace",
+            },
+            options: PlayOptions {
+                license: "premium",
+                skip_to,
+                player_options_override: Modes {
+                    shuffling_context: shuffle,
+                    repeating_context: repeat == Repeat::Context,
+                    repeating_track: repeat == Repeat::Track,
+                },
+            },
+        },
+    }
+}
+
 impl Api {
-    /// Sends a transport command to another device.
-    pub async fn remote(&self, device: &str, command: RemoteCommand) -> Result<()> {
+    /// Starts playback of a context or track list on another device.
+    pub async fn remote_play(
+        &self,
+        device: &str,
+        play: RemotePlay<'_>,
+        shuffle: bool,
+        repeat: Repeat,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(&play_body(play, shuffle, repeat)).map_err(decode)?;
+        self.command(device, body).await
+    }
+
+    /// Queues a track on another device.
+    pub async fn remote_queue(&self, device: &str, track: Id) -> Result<()> {
+        let envelope = QueueEnvelope {
+            command: QueueCommand {
+                endpoint: "add_to_queue",
+                track: TrackRef {
+                    uri: Kind::Track.uri(track),
+                    provider: Some(QUEUE_PROVIDER),
+                },
+            },
+        };
+        self.command(device, serde_json::to_vec(&envelope).map_err(decode)?)
+            .await
+    }
+
+    async fn command(&self, device: &str, body: Vec<u8>) -> Result<()> {
         let endpoint = format!(
             "/connect-state/v1/player/command/from/{}/to/{device}",
             self.device_id()
         );
-        let body = serde_json::to_vec(&command.body()).map_err(decode)?;
         self.0
             .spclient(Method::POST, &endpoint, Some(JSON), body.into())
             .await?;
         Ok(())
+    }
+
+    /// Sends a transport command to another device.
+    pub async fn remote(&self, device: &str, command: RemoteCommand) -> Result<()> {
+        let body = serde_json::to_vec(&command.body()).map_err(decode)?;
+        self.command(device, body).await
     }
 
     /// Sets another device's volume, in `0.0..=1.0`.
@@ -117,6 +299,54 @@ mod tests {
 
     fn json(command: RemoteCommand) -> String {
         serde_json::to_string(&command.body()).unwrap()
+    }
+
+    #[test]
+    fn play_names_the_context_and_where_to_start() {
+        let track = Id::from_base62("4uLU6hMCjMI75M1A2tKUQC").unwrap();
+        let play = RemotePlay::Context {
+            uri: "spotify:album:4m2880jivSbbyEGAKfITCa",
+            start: Start::Track(track),
+        };
+        let body = serde_json::to_value(play_body(play, true, Repeat::Context)).unwrap();
+        let command = &body["command"];
+        assert_eq!(command["endpoint"], "play");
+        assert_eq!(
+            command["context"]["uri"],
+            "spotify:album:4m2880jivSbbyEGAKfITCa"
+        );
+        assert_eq!(
+            command["context"]["url"],
+            "context://spotify:album:4m2880jivSbbyEGAKfITCa"
+        );
+        assert_eq!(
+            command["options"]["skip_to"]["track_uri"],
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQC"
+        );
+        let modes = &command["options"]["player_options_override"];
+        assert_eq!(modes["shuffling_context"], true);
+        assert_eq!(modes["repeating_context"], true);
+        assert_eq!(modes["repeating_track"], false);
+    }
+
+    #[test]
+    fn a_track_list_travels_as_a_page() {
+        let track = Id::from_base62("4uLU6hMCjMI75M1A2tKUQC").unwrap();
+        let play = RemotePlay::Tracks {
+            tracks: &[track, track],
+            index: 1,
+        };
+        let body = serde_json::to_value(play_body(play, false, Repeat::Off)).unwrap();
+        let command = &body["command"];
+        assert!(command["context"].get("uri").is_none());
+        assert_eq!(
+            command["context"]["pages"][0]["tracks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(command["options"]["skip_to"]["track_index"], 1);
     }
 
     #[test]

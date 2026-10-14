@@ -5,7 +5,7 @@ use std::time::Duration;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, Repeat, Start,
+    Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
     model::{Id, Image, Kind, Lyrics, Playlist, Track},
 };
 
@@ -365,12 +365,36 @@ impl Session {
                 start,
                 shuffle,
                 repeat,
-            } => self.engine.play_context(&uri, start, shuffle, repeat),
+            } => match self.remote.clone() {
+                // Playback stays on whichever device has it, as in Spotify's apps.
+                Some(device) => {
+                    self.spawn(move |api, _| async move {
+                        let play = RemotePlay::Context { uri: &uri, start };
+                        let result = api.remote_play(&device, play, shuffle, repeat).await;
+                        result.err().map(|error| Update::Notice(error.to_string()))
+                    });
+                    Ok(())
+                }
+                None => self.engine.play_context(&uri, start, shuffle, repeat),
+            },
             Request::PlayTracks {
                 tracks,
                 index,
                 repeat,
-            } => self.engine.play_tracks(&tracks, index, repeat),
+            } => match self.remote.clone() {
+                Some(device) => {
+                    self.spawn(move |api, _| async move {
+                        let play = RemotePlay::Tracks {
+                            tracks: &tracks,
+                            index,
+                        };
+                        let result = api.remote_play(&device, play, false, repeat).await;
+                        result.err().map(|error| Update::Notice(error.to_string()))
+                    });
+                    Ok(())
+                }
+                None => self.engine.play_tracks(&tracks, index, repeat),
+            },
             Request::Play => self.transport(RemoteCommand::Resume, Engine::play),
             Request::Pause => self.transport(RemoteCommand::Pause, Engine::pause),
             Request::Next => self.transport(RemoteCommand::Next, Engine::next),
@@ -408,11 +432,16 @@ impl Session {
                 }
                 Ok(())
             }
-            Request::AddToQueue(track) => match self.remote {
-                Some(_) => {
-                    self.send(Update::Notice(
-                        "Queueing on another device isn't supported yet".into(),
-                    ));
+            Request::AddToQueue(track) => match self.remote.clone() {
+                Some(device) => {
+                    self.spawn(move |api, _| async move {
+                        match api.remote_queue(&device, track).await {
+                            Ok(()) => Update::Notice("Added to queue".into()),
+                            Err(error) => {
+                                Update::Notice(format!("Couldn't queue the track: {error}"))
+                            }
+                        }
+                    });
                     Ok(())
                 }
                 None => {

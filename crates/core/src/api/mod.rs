@@ -18,7 +18,7 @@ use std::sync::Arc;
 use librespot_core::Session;
 
 pub use library::SavedItems;
-pub use remote::RemoteCommand;
+pub use remote::{RemoteCommand, RemotePlay};
 use transport::Transport;
 
 /// Cheaply cloneable handle for catalogue and library requests.
