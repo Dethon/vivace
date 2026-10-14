@@ -286,6 +286,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(|ui| ui.global::<Library>().invoke_set_sort(0)),
         ),
         (
+            "9g-audiobook-search",
+            4000,
+            Box::new(|ui| {
+                ui.global::<Nav>().set_query("el principito".into());
+                ui.global::<Nav>().invoke_search("el principito".into());
+            }),
+        ),
+        (
+            "9h-audiobook",
+            4000,
+            Box::new(|ui| {
+                let rows = ui.global::<Nav>().get_rows();
+                let title = rows
+                    .iter()
+                    .position(|row| row.kind == RowKind::Section && row.text == "Audiobooks");
+                match title {
+                    Some(row) => ui.global::<Nav>().invoke_open_card(row as i32 + 1, 0),
+                    None => println!("no audiobooks among the results"),
+                }
+            }),
+        ),
+        (
             "10-lyrics-search",
             4000,
             Box::new(|ui| {

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     Api,
     graph::{
-        AlbumData, ArtistData, Items, Lenient, PlaylistData, ShowData, TrackData, Wrapped, album,
-        artist, playlist, show, track,
+        AlbumData, ArtistData, AudiobookData, Items, Lenient, PlaylistData, ShowData, TrackData,
+        Wrapped, album, artist, audiobook, playlist, show, track,
     },
     transport::Query,
 };
@@ -63,6 +63,8 @@ struct Search {
     playlists: Items<Wrapped<Lenient<PlaylistData>>>,
     #[serde(default)]
     podcasts: Items<Wrapped<Lenient<ShowData>>>,
+    #[serde(default)]
+    audiobooks: Items<Wrapped<Lenient<AudiobookData>>>,
 }
 
 impl From<Search> for SearchResults {
@@ -82,6 +84,7 @@ impl From<Search> for SearchResults {
             albums: collect(search.albums_v2, album),
             playlists: collect(search.playlists, playlist),
             shows: collect(search.podcasts, show),
+            audiobooks: collect(search.audiobooks, audiobook),
         }
     }
 }
@@ -140,6 +143,11 @@ mod tests {
             {"data": {"__typename": "Podcast", "uri": "spotify:show:2Fi1hZJoCaFDmuAYxHwDku", "name": "Daft Punk",
                       "publisher": {"name": "Melissa"}, "coverArt": {"sources": [{"url": "https://i.scdn.co/image/s", "width": 300}]}}}
         ]},
+        "audiobooks": {"items": [
+            {"data": {"__typename": "Audiobook", "uri": "spotify:show:6R1EaCTmDiVmSS9B0TrEd4",
+                      "name": "El Principito", "authorsV2": [{"name": "Antoine de Saint-Exupéry"}],
+                      "coverArt": {"sources": [{"url": "https://i.scdn.co/image/b", "width": 300}]}}}
+        ]},
         "genres": {"items": [{"data": {"name": "ignored"}}]}
     }}"#;
 
@@ -181,6 +189,12 @@ mod tests {
 
         assert_eq!(&*results.shows[0].name, "Daft Punk");
         assert_eq!(&*results.shows[0].publisher, "Melissa");
+        assert!(!results.shows[0].audiobook);
+        assert_eq!(
+            &*results.audiobooks[0].publisher,
+            "Antoine de Saint-Exupéry"
+        );
+        assert!(results.audiobooks[0].audiobook);
 
         assert_eq!(&*results.playlists[0].owner, "Spotify");
         assert_eq!(

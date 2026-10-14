@@ -511,6 +511,21 @@ impl App {
                 }
             }
         });
+        nav.on_open_external(self.handler(|app| {
+            let link = app
+                .state
+                .borrow()
+                .page
+                .as_ref()
+                .and_then(|page| page.header.as_ref()?.external.clone());
+            // Hands over to the browser, which offers Spotify's app if installed.
+            if let Some(link) = link
+                && let Err(error) = open::that_detached(&link)
+            {
+                log::warn!("couldn't open {link}: {error}");
+                app.notice("Couldn't open Spotify");
+            }
+        }));
         nav.on_open_section({
             let app = Rc::downgrade(self);
             move |row| {
@@ -2044,13 +2059,17 @@ impl App {
                         playable: page.context.is_some(),
                         save: match header.save {
                             Some(Saveable::Album(_)) => SaveKind::Album,
-                            // A show is followed, like an artist.
+                            // An audiobook is saved like an album, though
+                            // Spotify keeps it with the followed shows.
+                            Some(Saveable::Show(_)) if header.external.is_some() => SaveKind::Album,
+                            // A podcast is followed, like an artist.
                             Some(Saveable::Artist(_) | Saveable::Show(_)) => SaveKind::Artist,
                             Some(Saveable::Track(_) | Saveable::Episode(_)) | None => {
                                 SaveKind::None
                             }
                         },
                         saved: header.save.is_some_and(|item| state.is_saved(item)),
+                        external: header.external.is_some(),
                     },
                     ..Row::default()
                 }
@@ -2260,7 +2279,16 @@ impl App {
                 let show = &library.shows[index].0;
                 LibraryItem {
                     title: show.name.as_ref().into(),
-                    subtitle: format!("Podcast · {}", show.publisher).into(),
+                    subtitle: format!(
+                        "{} · {}",
+                        if show.audiobook {
+                            "Audiobook"
+                        } else {
+                            "Podcast"
+                        },
+                        show.publisher
+                    )
+                    .into(),
                     selected: *current == Page::Show(show.id),
                     removable: true,
                     remove_label: "Unfollow".into(),

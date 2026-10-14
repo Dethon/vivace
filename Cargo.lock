@@ -7443,6 +7443,7 @@ dependencies = [
  "librespot-playback",
  "log",
  "memory-stats",
+ "open",
  "raw-window-handle",
  "resvg 0.45.1",
  "serde",

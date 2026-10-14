@@ -145,6 +145,9 @@ pub struct Episode {
     pub track: Track,
     /// Unix seconds, or 0 when unknown.
     pub published_at: i64,
+    /// Its place in the show, such as an audiobook's chapter number; 0 when
+    /// Spotify gives none.
+    pub number: u32,
 }
 
 /// How far the user has listened to an episode, kept by Spotify across devices.
@@ -162,8 +165,12 @@ pub enum Progress {
 pub struct Show {
     pub id: Id,
     pub name: Box<str>,
+    /// The publisher, or for an audiobook its author.
     pub publisher: Box<str>,
     pub image: Option<Image>,
+    /// An audiobook, whose chapters only Spotify's own apps can play:
+    /// Spotify does not give librespot the keys to decrypt them.
+    pub audiobook: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -323,6 +330,7 @@ pub struct SearchResults {
     pub albums: Vec<Album>,
     pub playlists: Vec<Playlist>,
     pub shows: Vec<Show>,
+    pub audiobooks: Vec<Show>,
 }
 
 #[cfg(test)]

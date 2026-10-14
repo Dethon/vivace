@@ -2,7 +2,10 @@
 
 use vivace_core::{
     Api, Result,
-    model::{Album, AlbumKind, Artist, Id, Image, ItemRef, Kind, Playlist, ShelfItem, Show, Track},
+    model::{
+        Album, AlbumKind, Artist, Id, Image, ItemRef, Kind, Playlist, ShelfItem, Show, ShowDetails,
+        Track,
+    },
 };
 
 use crate::format;
@@ -38,6 +41,7 @@ pub enum SearchKind {
     Albums,
     Playlists,
     Podcasts,
+    Audiobooks,
 }
 
 impl SearchKind {
@@ -48,6 +52,7 @@ impl SearchKind {
             SearchKind::Albums => "Albums",
             SearchKind::Playlists => "Playlists",
             SearchKind::Podcasts => "Podcasts",
+            SearchKind::Audiobooks => "Audiobooks",
         }
     }
 }
@@ -74,6 +79,9 @@ pub struct Header {
     pub emblem: Option<Emblem>,
     /// What the header's save or follow button acts on, if it has one.
     pub save: Option<Saveable>,
+    /// A page of Spotify's own player to listen with instead, for what
+    /// Vivace cannot play.
+    pub external: Option<String>,
 }
 
 /// The user's own collections, drawn as an emblem rather than artwork.
@@ -268,6 +276,7 @@ async fn liked(api: &Api, collection_uri: &str) -> Result<PageData> {
             round: false,
             emblem: Some(Emblem::LikedSongs),
             save: None,
+            external: None,
         }),
         context: Some(collection_uri.into()),
         listed_order: false,
@@ -309,6 +318,7 @@ async fn your_episodes(api: &Api, collection_uri: &str) -> Result<PageData> {
             round: false,
             emblem: Some(Emblem::YourEpisodes),
             save: None,
+            external: None,
         }),
         context: Some(format!("{collection_uri}:your-episodes")),
         listed_order: false,
@@ -355,6 +365,7 @@ async fn playlist(api: &Api, id: Id) -> Result<PageData> {
             round: false,
             emblem: None,
             save: None,
+            external: None,
         }),
         context: Some(Kind::Playlist.uri(id)),
         listed_order: false,
@@ -394,6 +405,7 @@ async fn album(api: &Api, id: Id) -> Result<PageData> {
             round: false,
             emblem: None,
             save: Some(Saveable::Album(id)),
+            external: None,
         }),
         context: Some(Kind::Album.uri(id)),
         listed_order: false,
@@ -458,6 +470,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
             round: true,
             emblem: None,
             save: Some(Saveable::Artist(id)),
+            external: None,
         }),
         context: Some(Kind::Artist.uri(id)),
         listed_order: false,
@@ -467,6 +480,9 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
 
 async fn show(api: &Api, id: Id) -> Result<PageData> {
     let details = api.show(id).await?;
+    if details.show.audiobook {
+        return Ok(audiobook(details));
+    }
     let episodes: Vec<TrackEntry> = details
         .episodes
         .into_iter()
@@ -485,6 +501,7 @@ async fn show(api: &Api, id: Id) -> Result<PageData> {
             round: false,
             emblem: None,
             save: Some(Saveable::Show(id)),
+            external: None,
         }),
         context: Some(Kind::Show.uri(id)),
         // A series plays in the context's order, which is the page's; other
@@ -497,6 +514,41 @@ async fn show(api: &Api, id: Id) -> Result<PageData> {
             "This podcast has no episodes",
         )],
     })
+}
+
+/// An audiobook's page: its chapters, which only Spotify's own apps can
+/// play, and a way to open it there.
+fn audiobook(details: ShowDetails) -> PageData {
+    let id = details.show.id;
+    let chapters: Vec<TrackEntry> = details
+        .episodes
+        .into_iter()
+        .map(|chapter| undated(chapter.track))
+        .collect();
+    let mut sections = vec![Section::Message(
+        "Audiobooks play only in Spotify's own apps: open this one there to listen.".into(),
+    )];
+    sections.push(track_list(
+        chapters,
+        Dates::None,
+        true,
+        "This audiobook has no chapters",
+    ));
+    PageData {
+        header: Some(Header {
+            kind: "Audiobook",
+            title: details.show.name.into(),
+            subtitle: details.show.publisher.into(),
+            image: details.show.image,
+            round: false,
+            emblem: None,
+            save: Some(Saveable::Show(id)),
+            external: Some(format!("https://open.spotify.com/show/{}", id.to_base62())),
+        }),
+        context: None,
+        listed_order: false,
+        sections,
+    }
 }
 
 async fn search(api: &Api, query: &str) -> Result<PageData> {
@@ -534,6 +586,10 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
         (
             SearchKind::Podcasts,
             results.shows.iter().map(show_card).collect(),
+        ),
+        (
+            SearchKind::Audiobooks,
+            results.audiobooks.iter().map(show_card).collect(),
         ),
     ];
     for (kind, cards) in kinds {
@@ -578,6 +634,7 @@ async fn search_all(api: &Api, query: &str, kind: SearchKind) -> Result<PageData
         SearchKind::Albums => results.albums.iter().map(album_card).collect(),
         SearchKind::Playlists => results.playlists.iter().map(playlist_card).collect(),
         SearchKind::Podcasts => results.shows.iter().map(show_card).collect(),
+        SearchKind::Audiobooks => results.audiobooks.iter().map(show_card).collect(),
     };
     push_cards(&mut sections, kind.title(), true, cards.into_iter());
     if sections.is_empty() {
@@ -710,7 +767,11 @@ fn release_card(album: &Album) -> Card {
 fn show_card(show: &Show) -> Card {
     Card {
         title: show.name.to_string(),
-        subtitle: show.publisher.to_string(),
+        subtitle: if show.audiobook {
+            format!("Audiobook · {}", show.publisher)
+        } else {
+            show.publisher.to_string()
+        },
         image: show.image.clone(),
         round: false,
         target: Page::Show(show.id),

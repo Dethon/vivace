@@ -97,13 +97,21 @@ impl Api {
             .ok_or(Error::NotFound)?;
 
         // Spotify lists a show's episodes newest first, the order its apps
-        // show them in unless the show is a series.
-        let sequential = message.consumption_order() == proto::show::ConsumptionOrder::SEQUENTIAL;
+        // show them in unless the show is a series. Audiobooks list their
+        // chapters in no dependable order, after a trailer; their numbers
+        // give the reading order.
+        let audiobook = message.is_audiobook();
+        let sequential =
+            !audiobook && message.consumption_order() == proto::show::ConsumptionOrder::SEQUENTIAL;
+        let trailer = Kind::Episode.id(message.trailer_uri());
         let listed = message
             .episode
             .iter()
-            .filter_map(|episode| Id::from_raw(episode.gid()).ok());
-        let ids: Vec<Id> = if sequential {
+            .filter_map(|episode| Id::from_raw(episode.gid()).ok())
+            .filter(|id| !audiobook || Some(*id) != trailer);
+        let ids: Vec<Id> = if audiobook {
+            listed.collect()
+        } else if sequential {
             let mut ids: Vec<Id> = listed.collect();
             ids.reverse();
             ids.truncate(SHOW_EPISODES);
@@ -111,7 +119,14 @@ impl Api {
         } else {
             listed.take(SHOW_EPISODES).collect()
         };
-        let episodes: Vec<Episode> = self.episodes(&ids).await?.into_iter().flatten().collect();
+        let mut episodes: Vec<Episode> = self.episodes(&ids).await?.into_iter().flatten().collect();
+        if audiobook {
+            episodes.sort_by_key(|chapter| chapter.number);
+            episodes.truncate(SHOW_EPISODES);
+            for chapter in &mut episodes {
+                chapter.track.playable = false;
+            }
+        }
 
         Ok(ShowDetails {
             show: show(&message).ok_or(Error::NotFound)?,
@@ -409,6 +424,7 @@ fn episode(country: &str, message: &proto::Episode) -> Option<Episode> {
             cover: cover(&message.cover_image.image).or_else(|| cover(&show.cover_image.image)),
         },
         published_at: unix_seconds(date.year(), date.month(), date.day()),
+        number: message.number().try_into().unwrap_or_default(),
     })
 }
 
@@ -418,6 +434,7 @@ fn show(message: &proto::Show) -> Option<Show> {
         name: message.name().into(),
         publisher: message.publisher().into(),
         image: cover(&message.cover_image.image),
+        audiobook: message.is_audiobook(),
     })
 }
 

@@ -165,8 +165,8 @@ async fn run() -> Fallible<()> {
             println!("{:?}", details.show);
             for episode in details.episodes.iter().take(6) {
                 println!(
-                    "  published {} cover {:?}",
-                    episode.published_at, episode.track.cover
+                    "  number {} published {} cover {:?}",
+                    episode.number, episode.published_at, episode.track.cover
                 );
                 print_tracks(std::slice::from_ref(&episode.track));
             }

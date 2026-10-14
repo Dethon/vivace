@@ -315,6 +315,7 @@ mod tests {
                     name: "Caso 63".into(),
                     publisher: "Spotify Studios".into(),
                     image: None,
+                    audiobook: false,
                 },
                 5,
             )],

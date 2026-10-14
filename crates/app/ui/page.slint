@@ -81,6 +81,31 @@ component HeaderRow inherits Rectangle {
                     }
                 }
 
+                if root.data.external: VerticalLayout {
+                    alignment: center;
+
+                    Rectangle {
+                        width: external.preferred-width + 40px;
+                        height: 40px;
+                        border-radius: 20px;
+                        background: external-touch.has-hover ? Theme.accent-hover : Theme.accent;
+
+                        external := Text {
+                            text: "Open in Spotify";
+                            color: Theme.on-accent;
+                            font-size: 14px;
+                            font-weight: 700;
+                        }
+
+                        external-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                Nav.open-external();
+                            }
+                        }
+                    }
+                }
+
                 if root.data.save == SaveKind.album: VerticalLayout {
                     alignment: center;
 

@@ -283,5 +283,33 @@ pub(super) fn show(data: ShowData) -> Option<Show> {
             .unwrap_or_default()
             .into(),
         image: data.cover_art.as_ref().and_then(Sources::image),
+        audiobook: false,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AudiobookData {
+    pub uri: String,
+    pub name: String,
+    #[serde(default)]
+    pub authors_v2: Vec<Publisher>,
+    #[serde(default)]
+    pub cover_art: Option<Sources>,
+}
+
+/// An audiobook, which Spotify keeps as a show of chapters.
+pub(super) fn audiobook(data: AudiobookData) -> Option<Show> {
+    let authors: Vec<String> = data
+        .authors_v2
+        .into_iter()
+        .map(|author| author.name)
+        .collect();
+    Some(Show {
+        id: Kind::Show.id(&data.uri)?,
+        name: data.name.into(),
+        publisher: authors.join(", ").into(),
+        image: data.cover_art.as_ref().and_then(Sources::image),
+        audiobook: true,
     })
 }

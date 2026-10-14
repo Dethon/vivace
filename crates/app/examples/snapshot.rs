@@ -179,6 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 playable: true,
                 save: SaveKind::Album,
                 saved: true,
+                external: false,
             },
             ..Row::default()
         },

@@ -46,6 +46,8 @@ export struct HeaderData {
     // Which save control the header offers, and whether it is on.
     save: SaveKind,
     saved: bool,
+    // Offers to open the page in Spotify's own player.
+    external: bool,
 }
 
 // A page is one virtualised list of rows of these kinds.
@@ -165,6 +167,8 @@ export global Nav {
     callback open-card(int, int);
     // Follows the "Show all" link of the section titled in a row.
     callback open-section(int);
+    // Opens what the page shows in Spotify's own player.
+    callback open-external();
     // How many cards fit in a row at the current width.
     callback columns-changed(int);
 }
