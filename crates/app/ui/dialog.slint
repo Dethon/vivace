@@ -30,23 +30,31 @@ component DialogButton inherits Rectangle {
 export component DialogOverlay inherits Rectangle {
     background: #000000a0;
 
+    // Keys go to the dialog, not to the shortcuts of the window behind it.
     init => {
         if Dialog.has-input {
             input.focus();
             input.select-all();
+        } else {
+            scope.focus();
         }
     }
 
     // Swallows clicks so nothing underneath reacts.
     TouchArea { }
 
-    FocusScope {
+    scope := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
                 Dialog.visible = false;
                 return accept;
             }
-            reject
+            if event.text == Key.Return && !Dialog.has-input {
+                Dialog.confirmed(Dialog.text);
+                return accept;
+            }
+            // Nothing typed here should reach the window's shortcuts.
+            accept
         }
 
         Rectangle {
