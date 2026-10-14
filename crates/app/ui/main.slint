@@ -26,13 +26,15 @@ export component MainWindow inherits Window {
     // Shortcuts work as soon as the window opens, without clicking first.
     forward-focus: keys;
 
+    // The shortcuts of Spotify's desktop app. Keys typed into a text field
+    // reach it first, so typing a space or moving the cursor still works.
     keys := FocusScope {
         key-pressed(event) => {
             if event.text == " " {
                 Player.toggle();
                 return accept;
             }
-            if event.modifiers.control && event.text == "l" {
+            if event.modifiers.control && (event.text == "l" || event.text == "k") {
                 top-bar.focus-search();
                 return accept;
             }
@@ -42,6 +44,37 @@ export component MainWindow inherits Window {
             }
             if event.modifiers.alt && event.text == Key.RightArrow {
                 Nav.forward();
+                return accept;
+            }
+            if event.modifiers.alt && event.modifiers.shift && (event.text == "b" || event.text == "B") {
+                Player.toggle-liked();
+                return accept;
+            }
+            if !event.modifiers.control {
+                return reject;
+            }
+            if event.text == Key.RightArrow {
+                Player.next();
+                return accept;
+            }
+            if event.text == Key.LeftArrow {
+                Player.previous();
+                return accept;
+            }
+            if event.text == Key.UpArrow {
+                Player.set-volume(min(1, Player.volume + 0.1));
+                return accept;
+            }
+            if event.text == Key.DownArrow {
+                Player.set-volume(max(0, Player.volume - 0.1));
+                return accept;
+            }
+            if event.text == "s" {
+                Player.toggle-shuffle();
+                return accept;
+            }
+            if event.text == "r" {
+                Player.cycle-repeat();
                 return accept;
             }
             reject

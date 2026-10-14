@@ -211,6 +211,10 @@ async fn run() -> Fallible<()> {
             }
             println!("recorded {:?}", api.episode_progress(episode.id).await?);
         }
+        ["remote-volume", device, volume] => {
+            api.remote_volume(device, volume.parse()?).await?;
+            println!("set {device} to {volume}");
+        }
         ["episodes"] => {
             for saved in api.saved_episodes().await? {
                 println!("{} {:?}", Kind::Episode.uri(saved.id), saved.added_at);

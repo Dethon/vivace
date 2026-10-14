@@ -247,6 +247,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(|ui| ui.global::<Library>().invoke_open(0)),
         ),
         (
+            "9b-shortcuts",
+            1500,
+            // Alt+Left goes back to the album and Ctrl+K puts the cursor in
+            // the search field. Transport and volume keys are left out: when
+            // the user is listening elsewhere they would act on that device.
+            Box::new(|ui| {
+                shortcut(
+                    ui,
+                    slint::platform::Key::Alt,
+                    slint::platform::Key::LeftArrow.into(),
+                );
+                shortcut(ui, slint::platform::Key::Control, "k".into());
+            }),
+        ),
+        (
             "10-lyrics-search",
             4000,
             Box::new(|ui| {
@@ -516,4 +531,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.quit();
     println!("closed in {:?}", closing.elapsed());
     Ok(())
+}
+
+/// Presses a key while holding a modifier, as a user would.
+fn shortcut(ui: &MainWindow, modifier: slint::platform::Key, key: slint::SharedString) {
+    use slint::platform::WindowEvent;
+    let window = ui.window();
+    let modifier: slint::SharedString = modifier.into();
+    window.dispatch_event(WindowEvent::KeyPressed {
+        text: modifier.clone(),
+    });
+    window.dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+    window.dispatch_event(WindowEvent::KeyReleased { text: key });
+    window.dispatch_event(WindowEvent::KeyReleased { text: modifier });
 }
