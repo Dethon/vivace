@@ -191,7 +191,7 @@ export component SettingsPage inherits Rectangle {
             }
 
             SectionTitle {
-                text: "Startup";
+                text: "Desktop";
             }
 
             Setting {
@@ -221,6 +221,22 @@ export component SettingsPage inherits Rectangle {
                         on: SettingsView.close-to-tray;
                         toggled => {
                             SettingsView.set-close-to-tray(!SettingsView.close-to-tray);
+                        }
+                    }
+                }
+            }
+
+            if SettingsView.notify-supported: Setting {
+                title: "Show a notification when the song changes";
+                detail: "Names each new song as it starts playing here.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.notify-song-changes;
+                        toggled => {
+                            SettingsView.set-notify-song-changes(!SettingsView.notify-song-changes);
                         }
                     }
                 }

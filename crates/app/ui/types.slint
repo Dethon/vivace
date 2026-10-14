@@ -185,6 +185,9 @@ export global SettingsView {
     // Whether this system has a tray to close the window to.
     in property <bool> tray-supported;
     in property <bool> close-to-tray;
+    // Whether this system shows a notification for each new song.
+    in property <bool> notify-supported;
+    in property <bool> notify-song-changes;
     in property <string> username;
     in property <string> version;
     in property <string> data-folder;
@@ -193,6 +196,7 @@ export global SettingsView {
     callback set-device-name(string);
     callback set-start-at-login(bool);
     callback set-close-to-tray(bool);
+    callback set-notify-song-changes(bool);
     callback sign-out();
 }
 

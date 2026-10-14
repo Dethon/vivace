@@ -10,7 +10,7 @@ const FILE_NAME: &str = "settings.json";
 // Earlier versions stored the default name; every computer shared it.
 const OLD_DEFAULT_NAME: &str = "Vivace";
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub window: Option<WindowState>,
@@ -22,6 +22,22 @@ pub struct Settings {
     pub device_name: Option<String>,
     /// Closing the window leaves the app running in the tray, where there is one.
     pub close_to_tray: bool,
+    /// A notification names each new song, where the system shows them.
+    pub notify_song_changes: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            window: None,
+            quality: Quality::default(),
+            normalise: false,
+            device_name: None,
+            close_to_tray: false,
+            // As in Spotify's Linux app.
+            notify_song_changes: true,
+        }
+    }
 }
 
 /// The window's size in logical pixels. Its position is not kept: a saved
@@ -123,6 +139,7 @@ mod tests {
             normalise: true,
             device_name: Some("Study".into()),
             close_to_tray: true,
+            notify_song_changes: false,
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), settings);

@@ -8,6 +8,7 @@ mod images;
 mod logging;
 mod media;
 mod models;
+pub mod notify;
 mod settings;
 pub mod system;
 mod tray;

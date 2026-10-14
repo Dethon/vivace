@@ -22,6 +22,7 @@ use crate::{
     images::{Images, Shape},
     media::{Attach, MediaCommand, MediaKeys},
     models::LazyModel,
+    notify,
     settings::Settings,
     system,
     tray::{self, Tray},
@@ -58,6 +59,8 @@ pub struct App {
     /// Hide the window once media keys are attached: the app started at
     /// login with the window closed to the tray.
     start_hidden: Cell<bool>,
+    /// Name each new song in a notification.
+    notify_song_changes: Cell<bool>,
     images: Images,
     rows: Rc<LazyModel<Row>>,
     library: Rc<LazyModel<LibraryItem>>,
@@ -207,6 +210,7 @@ impl App {
             media: RefCell::new(None),
             tray: RefCell::new(None),
             start_hidden: Cell::new(false),
+            notify_song_changes: Cell::new(false),
             requests,
             backend_finished,
             rows: Rc::new(LazyModel::new(with(app, Self::row))),
@@ -401,6 +405,15 @@ impl App {
             }
         });
         settings.set_tray_supported(tray::SUPPORTED);
+        settings.set_notify_supported(notify::SUPPORTED);
+        settings.on_set_notify_song_changes({
+            let app = Rc::downgrade(self);
+            move |on| {
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.notify_song_changes = on);
+                }
+            }
+        });
         settings.on_set_close_to_tray({
             let app = Rc::downgrade(self);
             move |on| {
@@ -968,6 +981,10 @@ impl App {
         // A local track starts from the top; another device says where it is.
         if !remote {
             self.show_position(0);
+        }
+        // Only songs that start here, as with Spotify's own notifications.
+        if !remote && previous != Some(track.id) && self.notify_song_changes.get() {
+            notify::announce(track.name.to_string(), artist_names(&track));
         }
         if let Some(media) = self.media.borrow_mut().as_mut() {
             media.set_track(&track, &artist_names(&track));
@@ -1654,6 +1671,8 @@ impl App {
 
     fn show_settings(&self, settings: &Settings) {
         self.set_tray(settings.close_to_tray && tray::SUPPORTED);
+        self.notify_song_changes
+            .set(settings.notify_song_changes && notify::SUPPORTED);
         self.with_ui(|ui| {
             let view = ui.global::<SettingsView>();
             view.set_quality(match settings.quality {
@@ -1665,6 +1684,7 @@ impl App {
             view.set_device_name(settings.device_name().into());
             view.set_start_at_login(system::starts_at_login());
             view.set_close_to_tray(settings.close_to_tray && tray::SUPPORTED);
+            view.set_notify_song_changes(settings.notify_song_changes);
         });
     }
 
