@@ -10,6 +10,7 @@ fn main() -> Result<(), slint::PlatformError> {
     vivace::init_logging();
 
     let ui = MainWindow::new()?;
+    ui.set_app_icon(vivace::app_icon());
     let settings = Settings::load();
     if let Some(window) = settings.window {
         if window.width >= MIN_RESTORED_SIZE && window.height >= MIN_RESTORED_SIZE {

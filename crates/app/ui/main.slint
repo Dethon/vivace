@@ -6,11 +6,16 @@ import { PageView } from "page.slint";
 import { PlayerBar } from "player-bar.slint";
 import { QueuePanel } from "queue.slint";
 import { LyricsPanel } from "lyrics.slint";
+import { AppIcon } from "icon.slint";
 
-export { Player, Nav, Library, Queue, LyricsView, Devices, Session }
+export { Player, Nav, Library, Queue, LyricsView, Devices, Session, AppIcon }
 
 export component MainWindow inherits Window {
+    // Set at startup from the bundled PNG.
+    in property <image> app-icon;
+
     title: Player.available ? Player.title + " · " + Player.artists : "Vivace";
+    icon: self.app-icon;
     preferred-width: 1180px;
     preferred-height: 760px;
     min-width: 640px;

@@ -13,6 +13,7 @@ mod settings;
 slint::include_modules!();
 
 pub use app::App;
+pub use images::app_icon;
 pub use logging::init as init_logging;
 pub use settings::{Settings, WindowState};
 pub use vivace_core::Config;
