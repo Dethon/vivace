@@ -81,7 +81,8 @@ impl Api {
             .await
     }
 
-    /// A show with its most recent episodes.
+    /// A show with its most recent episodes, or with its first ones when it
+    /// is meant to be heard in order.
     pub async fn show(&self, id: Id) -> Result<ShowDetails> {
         let message = self
             .metadata(
@@ -95,18 +96,27 @@ impl Api {
             .flatten()
             .ok_or(Error::NotFound)?;
 
-        let ids: Vec<Id> = message
+        // Spotify lists a show's episodes newest first, the order its apps
+        // show them in unless the show is a series.
+        let sequential = message.consumption_order() == proto::show::ConsumptionOrder::SEQUENTIAL;
+        let listed = message
             .episode
             .iter()
-            .filter_map(|episode| Id::from_raw(episode.gid()).ok())
-            .take(SHOW_EPISODES)
-            .collect();
-        let mut episodes: Vec<Episode> = self.episodes(&ids).await?.into_iter().flatten().collect();
-        episodes.sort_by_key(|episode| std::cmp::Reverse(episode.published_at));
+            .filter_map(|episode| Id::from_raw(episode.gid()).ok());
+        let ids: Vec<Id> = if sequential {
+            let mut ids: Vec<Id> = listed.collect();
+            ids.reverse();
+            ids.truncate(SHOW_EPISODES);
+            ids
+        } else {
+            listed.take(SHOW_EPISODES).collect()
+        };
+        let episodes: Vec<Episode> = self.episodes(&ids).await?.into_iter().flatten().collect();
 
         Ok(ShowDetails {
             show: show(&message).ok_or(Error::NotFound)?,
             episodes,
+            sequential,
         })
     }
 

@@ -169,8 +169,12 @@ pub struct Show {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShowDetails {
     pub show: Show,
-    /// The most recent episodes, newest first.
+    /// The most recent episodes, newest first; for a series, the first
+    /// episodes, oldest first.
     pub episodes: Vec<Episode>,
+    /// A series, meant to be heard in order, like Spotify's playback context
+    /// for a show, which always runs oldest first.
+    pub sequential: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

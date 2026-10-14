@@ -8,7 +8,7 @@
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
-//!   cli episode-end <episode id>     plays an episode's last seconds, which marks it played
+//!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
 //!
 //! Put `silent` first to discard audio instead of playing it: `cli silent play <uri>`.
 
@@ -23,7 +23,7 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, Playback, RemoteCommand, RemotePlay, Repeat, Start,
+    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start,
     model::{Id, ItemRef, Kind, Progress, Track},
 };
 
@@ -168,9 +168,13 @@ async fn run() -> Fallible<()> {
                 );
                 print_tracks(std::slice::from_ref(&episode.track));
             }
-            println!("{} episodes", details.episodes.len());
+            println!(
+                "{} episodes{}",
+                details.episodes.len(),
+                if details.sequential { ", a series" } else { "" }
+            );
         }
-        ["episode-end", id] => {
+        ["episode-end", id, rest @ ..] => {
             let episode = ItemRef::episode(Id::from_base62(id)?);
             let track = api
                 .items(&[episode])
@@ -178,7 +182,12 @@ async fn run() -> Fallible<()> {
                 .pop()
                 .flatten()
                 .ok_or("no such episode")?;
-            engine.play_tracks(&[episode], 0, Repeat::Off)?;
+            // A second episode, if given, plays next.
+            let mut list = vec![episode];
+            for next in rest {
+                list.push(ItemRef::episode(Id::from_base62(next)?));
+            }
+            engine.play_tracks(&list, 0, Repeat::Off)?;
             let deadline = tokio::time::sleep(Duration::from_secs(15));
             tokio::pin!(deadline);
             let mut sought = false;
@@ -186,12 +195,14 @@ async fn run() -> Fallible<()> {
                 tokio::select! {
                     _ = &mut deadline => break,
                     event = events.recv() => match event {
-                        Some(Event::Playback(Playback { playing: true, .. })) if !sought => {
+                        // Seeking while the episode is still loading is ignored.
+                        Some(Event::Position(position_ms)) if position_ms > 1_000 && !sought => {
                             sought = true;
                             println!("-> seek to 4 s before the end");
                             engine.seek(track.duration_ms.saturating_sub(4_000))?;
                         }
                         Some(event @ (Event::Item(_) | Event::Playback(_) | Event::Stopped)) => println!("{event:?}"),
+                        Some(Event::Position(position_ms)) if sought => println!("Position({position_ms})"),
                         Some(_) => {}
                         None => break,
                     },
@@ -336,6 +347,9 @@ async fn run() -> Fallible<()> {
                     "  playlist {} | {} | by {}",
                     playlist.id, playlist.name, playlist.owner
                 );
+            }
+            for show in &results.shows {
+                println!("  show {} | {} | {}", show.id, show.name, show.publisher);
             }
         }
         ["watch", rest @ ..] => {

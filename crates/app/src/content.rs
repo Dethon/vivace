@@ -57,6 +57,9 @@ pub struct PageData {
     pub header: Option<Header>,
     /// Spotify context the page's tracks play in; without one they play as a plain list.
     pub context: Option<String>,
+    /// The tracks play in the page's order, as a plain list, because the
+    /// context's own order differs from it.
+    pub listed_order: bool,
     pub sections: Vec<Section>,
 }
 
@@ -184,6 +187,7 @@ impl Page {
             Page::Settings => Ok(PageData {
                 header: None,
                 context: None,
+                listed_order: false,
                 sections: Vec::new(),
             }),
         }
@@ -234,6 +238,7 @@ async fn home(api: &Api) -> Result<PageData> {
     Ok(PageData {
         header: None,
         context: None,
+        listed_order: false,
         sections,
     })
 }
@@ -265,6 +270,7 @@ async fn liked(api: &Api, collection_uri: &str) -> Result<PageData> {
             save: None,
         }),
         context: Some(collection_uri.into()),
+        listed_order: false,
         sections: vec![track_list(
             tracks,
             Dates::Added,
@@ -305,6 +311,7 @@ async fn your_episodes(api: &Api, collection_uri: &str) -> Result<PageData> {
             save: None,
         }),
         context: Some(format!("{collection_uri}:your-episodes")),
+        listed_order: false,
         sections: vec![track_list(
             episodes,
             Dates::Added,
@@ -350,6 +357,7 @@ async fn playlist(api: &Api, id: Id) -> Result<PageData> {
             save: None,
         }),
         context: Some(Kind::Playlist.uri(id)),
+        listed_order: false,
         sections: vec![track_list(
             tracks,
             Dates::Added,
@@ -388,6 +396,7 @@ async fn album(api: &Api, id: Id) -> Result<PageData> {
             save: Some(Saveable::Album(id)),
         }),
         context: Some(Kind::Album.uri(id)),
+        listed_order: false,
         sections: vec![track_list(
             tracks,
             Dates::None,
@@ -451,6 +460,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
             save: Some(Saveable::Artist(id)),
         }),
         context: Some(Kind::Artist.uri(id)),
+        listed_order: false,
         sections,
     })
 }
@@ -477,6 +487,9 @@ async fn show(api: &Api, id: Id) -> Result<PageData> {
             save: Some(Saveable::Show(id)),
         }),
         context: Some(Kind::Show.uri(id)),
+        // A series plays in the context's order, which is the page's; other
+        // shows list newest first and go on to the next older episode.
+        listed_order: !details.sequential,
         sections: vec![track_list(
             episodes,
             Dates::Released,
@@ -539,6 +552,7 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
     Ok(PageData {
         header: None,
         context: None,
+        listed_order: false,
         sections,
     })
 }
@@ -573,6 +587,7 @@ async fn search_all(api: &Api, query: &str, kind: SearchKind) -> Result<PageData
     Ok(PageData {
         header: None,
         context: None,
+        listed_order: false,
         sections,
     })
 }

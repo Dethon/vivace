@@ -98,6 +98,8 @@ struct SpircTask {
     emit_set_queue_events: bool,
     // vivace: see `ConnectConfig::cluster_listener`.
     cluster_listener: Option<mpsc::UnboundedSender<Cluster>>,
+    // vivace: see `ConnectConfig::start_positions`.
+    start_positions: Option<Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>>,
 
     shutdown: bool,
     session: Session,
@@ -184,6 +186,7 @@ impl Spirc {
 
         let emit_set_queue_events = config.emit_set_queue_events;
         let cluster_listener = config.cluster_listener.clone();
+        let start_positions = config.start_positions.clone();
         let connect_state = ConnectState::new(config, &session);
 
         let connection_id_update = session
@@ -262,6 +265,7 @@ impl Spirc {
 
             emit_set_queue_events,
             cluster_listener,
+            start_positions,
 
             shutdown: false,
             session,
@@ -1771,7 +1775,7 @@ impl SpircTask {
 
         if has_next_track {
             self.add_autoplay_resolving_when_required();
-            self.load_track(continue_playing, 0)
+            self.load_track(continue_playing, self.start_position())
         } else {
             info!("Not playing next track because there are no more tracks left in queue.");
             self.handle_stop();
@@ -1791,7 +1795,7 @@ impl SpircTask {
                     self.connect_state.reset_playback_to_position(None)?;
                     self.handle_stop()
                 }
-                Some(_) => self.load_track(self.connect_state.is_playing(), 0)?,
+                Some(_) => self.load_track(self.connect_state.is_playing(), self.start_position())?,
             }
         } else {
             self.handle_seek(0);
@@ -1903,6 +1907,19 @@ impl SpircTask {
                 nominal_start_time, ..
             } => (self.now_ms() - nominal_start_time) as u32,
         }
+    }
+
+    // vivace: where the current track starts, see `ConnectConfig::start_positions`.
+    fn start_position(&self) -> u32 {
+        let Some(positions) = &self.start_positions else {
+            return 0;
+        };
+        let uri = self.connect_state.current_track(|t| t.uri.clone());
+        positions
+            .lock()
+            .ok()
+            .and_then(|positions| positions.get(&uri).copied())
+            .unwrap_or(0)
     }
 
     fn load_track(&mut self, start_playing: bool, position_ms: u32) -> Result<(), Error> {

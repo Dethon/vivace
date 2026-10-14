@@ -29,6 +29,12 @@ Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
    track. `add_autoplay_resolving_when_required` skips it, since Spotify
    offers no autoplay for a list it cannot name.
 
+5. `ConnectConfig::start_positions` names where tracks start, by URI, when
+   playback moves on to them by itself or by skipping (`handle_next`, and
+   `handle_prev` when it goes back a track). Vivace fills it with where the
+   user left the next episode, so the episode starts there instead of
+   starting from zero and jumping once the position is known.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.

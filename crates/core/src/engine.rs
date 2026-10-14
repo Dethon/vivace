@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{
     Api, Connect, Result, auth,
     model::{Id, ItemRef, Kind},
-    progress::{self, Recorder},
+    progress::{self, Recorder, StartPositions},
 };
 
 const CLUSTER_UPDATES: &str = "hm://connect-state/v1/cluster";
@@ -31,6 +31,8 @@ const DEFAULT_VOLUME: u16 = u16::MAX / 2;
 const VOLUME_SETTLE: Duration = Duration::from_millis(300);
 /// How long closing waits for the last episode position to be recorded.
 const FINAL_SAVE_TIMEOUT: Duration = Duration::from_secs(2);
+// Context librespot gives a list of tracks loaded without one.
+const TRACK_LIST_URI: &str = "spotify:web-api";
 // Provider Spotify assigns to tracks the user queued by hand.
 pub(crate) const QUEUE_PROVIDER: &str = "queue";
 
@@ -117,6 +119,7 @@ pub struct QueueItem {
 /// What this computer is playing and will play next.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Queue {
+    /// Empty for a list of tracks played without a context.
     pub context_uri: Box<str>,
     pub current: Option<ItemRef>,
     /// Upcoming tracks and episodes; local files are omitted.
@@ -223,12 +226,14 @@ impl Engine {
             .listen_for(CLUSTER_UPDATES, Message::from_raw::<ClusterUpdate>)?;
 
         let (own_clusters_tx, own_clusters) = mpsc::unbounded_channel();
+        let start_positions = StartPositions::default();
         let connect_config = ConnectConfig {
             name: config.device_name.clone(),
             device_type: DeviceType::Computer,
             initial_volume,
             emit_set_queue_events: true,
             cluster_listener: Some(own_clusters_tx),
+            start_positions: Some(start_positions.clone()),
             ..ConnectConfig::default()
         };
         // Spirc connects the session itself and stores reusable credentials.
@@ -255,6 +260,7 @@ impl Engine {
             Api::new(session.clone()),
             spirc.clone(),
             player.get_player_event_channel(),
+            start_positions,
         );
         let events = Events {
             player: player.get_player_event_channel(),
@@ -580,7 +586,12 @@ fn player_event(event: PlayerEvent) -> Option<Event> {
             next_tracks,
             ..
         } => Event::Queue(Queue {
-            context_uri: context_uri.into(),
+            // librespot names a plain list of tracks after the Web API.
+            context_uri: if context_uri == TRACK_LIST_URI {
+                Box::default()
+            } else {
+                context_uri.into()
+            },
             current: current_track.and_then(|track| ItemRef::from_uri(&track.uri)),
             next: next_tracks
                 .iter()

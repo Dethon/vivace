@@ -2,7 +2,8 @@
 //! this computer, so every device can pick up where they left off, and
 //! starts episodes from there.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use librespot_connect::Spirc;
@@ -27,6 +28,10 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_millis(1_500);
 /// only while it is still this close to its beginning.
 const RESUME_WINDOW_MS: u32 = 4_000;
 
+/// Where Spirc starts a track, by URI, when playback moves on to it by
+/// itself or by skipping (see the vendored `ConnectConfig::start_positions`).
+pub(crate) type StartPositions = Arc<Mutex<HashMap<String, u32>>>;
+
 /// Asks the recorder to store the current position at once.
 #[derive(Clone)]
 pub(crate) struct Recorder {
@@ -34,9 +39,17 @@ pub(crate) struct Recorder {
 }
 
 impl Recorder {
-    pub fn start(api: Api, spirc: Arc<Spirc>, events: PlayerEventChannel) -> Self {
+    /// Follows the player's `events`, keeping `positions` filled for the
+    /// episode that comes next.
+    pub fn start(
+        api: Api,
+        spirc: Arc<Spirc>,
+        events: PlayerEventChannel,
+        positions: StartPositions,
+    ) -> Self {
         let (flushes, flush_requests) = mpsc::unbounded_channel();
-        tokio::spawn(run(api, spirc, events, flush_requests));
+        let ledger = Ledger { api, positions };
+        tokio::spawn(run(ledger, spirc, events, flush_requests));
         Self { flushes }
     }
 
@@ -104,6 +117,52 @@ impl Listening {
     }
 }
 
+/// Spotify's record of episode positions, and the copy Spirc starts the
+/// next episode from.
+#[derive(Clone)]
+struct Ledger {
+    api: Api,
+    positions: StartPositions,
+}
+
+impl Ledger {
+    /// Keeps the position an episode would start from here.
+    fn note(&self, episode: Id, progress: Progress) {
+        let Ok(mut positions) = self.positions.lock() else {
+            return;
+        };
+        let uri = Kind::Episode.uri(episode);
+        match progress {
+            Progress::InProgress { position_ms } => positions.insert(uri, position_ms),
+            Progress::NotStarted | Progress::Completed => positions.remove(&uri),
+        };
+    }
+
+    async fn record(&self, episode: Id, progress: Progress) {
+        self.note(episode, progress);
+        if let Err(error) = self.api.set_episode_progress(episode, progress).await {
+            log::warn!("couldn't record how far the episode got: {error}");
+        }
+    }
+
+    fn record_later(&self, episode: Id, progress: Progress) {
+        let ledger = self.clone();
+        tokio::spawn(async move { ledger.record(episode, progress).await });
+    }
+
+    /// Learns where an episode about to play was left, so it starts there.
+    fn prefetch(&self, episode: Id) {
+        let ledger = self.clone();
+        tokio::spawn(async move {
+            let progress = match resume_point(&ledger.api, episode).await {
+                Some(position_ms) => Progress::InProgress { position_ms },
+                None => Progress::NotStarted,
+            };
+            ledger.note(episode, progress);
+        });
+    }
+}
+
 /// Where an episode was left, found after it started.
 struct Found {
     episode: Id,
@@ -111,7 +170,7 @@ struct Found {
 }
 
 async fn run(
-    api: Api,
+    ledger: Ledger,
     spirc: Arc<Spirc>,
     mut events: PlayerEventChannel,
     mut flushes: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
@@ -120,18 +179,29 @@ async fn run(
     let mut ticks = tokio::time::interval(SAVE_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut current: Option<Listening> = None;
+    // The upcoming episode whose position was last looked up.
+    let mut prefetched: Option<Id> = None;
     loop {
         tokio::select! {
             event = events.recv() => {
                 let Some(event) = event else {
                     // The player is gone; keep what was heard.
                     if let Some(listening) = &mut current {
-                        save(&api, listening).await;
+                        save(&ledger, listening).await;
                     }
                     return;
                 };
-                if let Some(lookup) = handle(&api, &mut current, event) {
-                    let (api, found) = (api.clone(), found_tx.clone());
+                if let PlayerEvent::SetQueue { next_tracks, .. } = &event {
+                    let next = next_tracks.first().and_then(|track| Kind::Episode.id(&track.uri));
+                    if let Some(next) = next
+                        && prefetched != Some(next)
+                    {
+                        prefetched = Some(next);
+                        ledger.prefetch(next);
+                    }
+                }
+                if let Some(lookup) = handle(&ledger, &mut current, event) {
+                    let (api, found) = (ledger.api.clone(), found_tx.clone());
                     tokio::spawn(async move {
                         if let Some(position_ms) = resume_point(&api, lookup).await {
                             _ = found.send(Found { episode: lookup, position_ms });
@@ -141,7 +211,7 @@ async fn run(
             }
             _ = ticks.tick() => {
                 if let Some(listening) = current.as_mut().filter(|listening| listening.playing) {
-                    save_later(&api, listening);
+                    save_later(&ledger, listening);
                 }
             }
             Some(Found { episode, position_ms }) = found.recv() => {
@@ -155,7 +225,7 @@ async fn run(
             }
             Some(done) = flushes.recv() => {
                 if let Some(listening) = &mut current {
-                    save(&api, listening).await;
+                    save(&ledger, listening).await;
                 }
                 _ = done.send(());
             }
@@ -166,7 +236,7 @@ async fn run(
 /// Follows the player, recording positions as they become worth keeping.
 /// Returns an episode whose resume point should be looked up because it
 /// started from the beginning.
-fn handle(api: &Api, current: &mut Option<Listening>, event: PlayerEvent) -> Option<Id> {
+fn handle(ledger: &Ledger, current: &mut Option<Listening>, event: PlayerEvent) -> Option<Id> {
     let playing = matches!(event, PlayerEvent::Playing { .. });
     match event {
         PlayerEvent::Loading {
@@ -181,7 +251,7 @@ fn handle(api: &Api, current: &mut Option<Listening>, event: PlayerEvent) -> Opt
         } if current.as_ref().map(|listening| listening.episode) != episode(&track_id) => {
             // Another item: the previous episode ends where it was.
             if let Some(previous) = current.as_mut() {
-                save_later(api, previous);
+                save_later(ledger, previous);
             }
             *current = episode(&track_id).map(|id| Listening::new(id, position_ms));
             // A preloaded episode starts with `Playing` and no `Loading`.
@@ -197,14 +267,14 @@ fn handle(api: &Api, current: &mut Option<Listening>, event: PlayerEvent) -> Opt
         PlayerEvent::Paused { position_ms, .. } => {
             let listening = current.as_mut()?;
             listening.moved(position_ms, false);
-            save_later(api, listening);
+            save_later(ledger, listening);
             None
         }
         PlayerEvent::Seeked { position_ms, .. } => {
             let listening = current.as_mut()?;
             let playing = listening.playing;
             listening.moved(position_ms, playing);
-            save_later(api, listening);
+            save_later(ledger, listening);
             None
         }
         PlayerEvent::PositionChanged { position_ms, .. }
@@ -217,15 +287,12 @@ fn handle(api: &Api, current: &mut Option<Listening>, event: PlayerEvent) -> Opt
         PlayerEvent::EndOfTrack { track_id, .. } => {
             let listening =
                 current.take_if(|listening| Some(listening.episode) == episode(&track_id))?;
-            let api = api.clone();
-            tokio::spawn(async move {
-                record(&api, listening.episode, Progress::Completed).await;
-            });
+            ledger.record_later(listening.episode, Progress::Completed);
             None
         }
         PlayerEvent::Stopped { .. } => {
             if let Some(mut listening) = current.take() {
-                save_later(api, &mut listening);
+                save_later(ledger, &mut listening);
             }
             None
         }
@@ -247,24 +314,17 @@ fn started(listening: &mut Listening, playing: bool, position_ms: u32) -> Option
 }
 
 /// Records the position in the background.
-fn save_later(api: &Api, listening: &mut Listening) {
+fn save_later(ledger: &Ledger, listening: &mut Listening) {
     if let Some(position_ms) = listening.unsaved() {
-        let (api, episode) = (api.clone(), listening.episode);
-        tokio::spawn(async move {
-            record(&api, episode, Progress::InProgress { position_ms }).await;
-        });
+        ledger.record_later(listening.episode, Progress::InProgress { position_ms });
     }
 }
 
-async fn save(api: &Api, listening: &mut Listening) {
+async fn save(ledger: &Ledger, listening: &mut Listening) {
     if let Some(position_ms) = listening.unsaved() {
-        record(api, listening.episode, Progress::InProgress { position_ms }).await;
-    }
-}
-
-async fn record(api: &Api, episode: Id, progress: Progress) {
-    if let Err(error) = api.set_episode_progress(episode, progress).await {
-        log::warn!("couldn't record how far the episode got: {error}");
+        ledger
+            .record(listening.episode, Progress::InProgress { position_ms })
+            .await;
     }
 }
 

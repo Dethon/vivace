@@ -17,7 +17,7 @@ use crate::{
     LibraryItem, LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind,
     Session, SettingsView, TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
-    content::{Card, Dates, Emblem, Page, PageData, Saveable, Section},
+    content::{Card, Dates, Emblem, Page, PageData, Saveable, Section, TrackSection},
     format,
     images::{Images, Shape},
     media::{Attach, MediaCommand, MediaKeys},
@@ -1257,6 +1257,7 @@ impl App {
             let data = Rc::new(result.unwrap_or_else(|error| PageData {
                 header: None,
                 context: None,
+                listed_order: false,
                 sections: vec![Section::Message(format!(
                     "Couldn't load this page\n{error}"
                 ))],
@@ -1394,26 +1395,25 @@ impl App {
             let Some(page) = state.page.clone() else {
                 return;
             };
-            // A show's context begins with its first episode ever; its page,
-            // like Spotify's apps, starts from the newest.
-            let start = match (state.current_page(), page.sections.first()) {
-                (Page::Show(_), Some(Section::Tracks(episodes))) => episodes
-                    .tracks
-                    .first()
-                    .map_or(Start::Beginning, |entry| Start::Item(entry.track.item())),
-                _ => Start::Beginning,
+            let Some(uri) = &page.context else {
+                return;
             };
-            match &page.context {
-                Some(uri) => {
-                    state.started = Some((uri.clone(), page_title(&page)));
-                    Request::PlayContext {
-                        uri: uri.clone(),
-                        start,
-                        shuffle: state.shuffle,
-                        repeat: state.repeat,
-                    }
+            if page.listed_order {
+                let Some(tracks) = page.sections.iter().find_map(|section| match section {
+                    Section::Tracks(tracks) => Some(tracks),
+                    _ => None,
+                }) else {
+                    return;
+                };
+                play_listed(&mut state, &page, tracks, 0)
+            } else {
+                state.started = Some((uri.clone(), page_title(&page)));
+                Request::PlayContext {
+                    uri: uri.clone(),
+                    start: Start::Beginning,
+                    shuffle: state.shuffle,
+                    repeat: state.repeat,
                 }
-                None => return,
             }
         };
         self.request(request);
@@ -1435,7 +1435,7 @@ impl App {
                 return;
             }
             match &page.context {
-                Some(uri) => {
+                Some(uri) if !page.listed_order => {
                     state.started = Some((uri.clone(), page_title(&page)));
                     Request::PlayContext {
                         uri: uri.clone(),
@@ -1444,18 +1444,7 @@ impl App {
                         repeat: state.repeat,
                     }
                 }
-                None => {
-                    state.started = None;
-                    Request::PlayTracks {
-                        tracks: tracks
-                            .tracks
-                            .iter()
-                            .map(|entry| entry.track.item())
-                            .collect(),
-                        index: index as u32,
-                        repeat: state.repeat,
-                    }
-                }
+                _ => play_listed(&mut state, &page, tracks, index),
             }
         };
         self.request(request);
@@ -2117,5 +2106,20 @@ fn section_more(section: &Section) -> Option<&Page> {
         Section::Tracks(tracks) => tracks.more.as_ref(),
         Section::Cards(cards) => cards.more.as_ref(),
         Section::Message(_) => None,
+    }
+}
+
+/// Plays a page's tracks as a plain list from `index`, naming the queue after
+/// the page when the list stands in for its context.
+fn play_listed(state: &mut State, page: &PageData, tracks: &TrackSection, index: usize) -> Request {
+    state.started = page.listed_order.then(|| (String::new(), page_title(page)));
+    Request::PlayTracks {
+        tracks: tracks
+            .tracks
+            .iter()
+            .map(|entry| entry.track.item())
+            .collect(),
+        index: index as u32,
+        repeat: state.repeat,
     }
 }

@@ -96,6 +96,10 @@ pub struct ConnectConfig {
     /// it in answer to this device's own state updates. Updates caused by
     /// other devices arrive on the dealer instead.
     pub cluster_listener: Option<tokio::sync::mpsc::UnboundedSender<crate::protocol::connect::Cluster>>,
+    /// vivace: where to start a track, by URI, when playback moves on to it
+    /// by itself or by skipping, e.g. where an episode was left. Tracks not
+    /// listed start from the beginning.
+    pub start_positions: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>>,
 }
 
 impl Default for ConnectConfig {
@@ -109,6 +113,7 @@ impl Default for ConnectConfig {
             volume_steps: 64,
             emit_set_queue_events: false,
             cluster_listener: None,
+            start_positions: None,
         }
     }
 }
