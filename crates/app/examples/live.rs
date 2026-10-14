@@ -521,12 +521,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         steps.push((
             "i4-show",
             4000,
-            Box::new(
-                move |ui| match library_index(ui, "A followed podcast") {
-                    Some(index) => ui.global::<Library>().invoke_open(index),
-                    None => println!("the podcast is not in the library"),
-                },
-            ),
+            // The first podcast the account follows.
+            Box::new(|ui| {
+                let items = ui.global::<Library>().get_items();
+                match items
+                    .iter()
+                    .position(|item| item.subtitle.starts_with("Podcast"))
+                {
+                    Some(index) => ui.global::<Library>().invoke_open(index as i32),
+                    None => println!("the account follows no podcasts"),
+                }
+            }),
         ));
         for name in ["i5-follow-clicked", "i6-follow-clicked-again"] {
             steps.push((
