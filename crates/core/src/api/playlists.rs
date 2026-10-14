@@ -48,7 +48,7 @@ impl Api {
         let mut add = Add::new();
         add.items.push(item(Kind::Playlist.uri(playlist)));
         add.set_add_first(true);
-        self.change(&self.rootlist(), added(add)).await?;
+        self.change(&self.rootlist_changes(), added(add)).await?;
         Ok(playlist)
     }
 
@@ -76,10 +76,28 @@ impl Api {
     /// this is what Spotify calls deleting it.
     pub async fn remove_playlist(&self, playlist: Id) -> Result<()> {
         let uris = std::iter::once(Kind::Playlist.uri(playlist));
-        self.change(&self.rootlist(), removed(uris)).await
+        self.change(&self.rootlist_changes(), removed(uris)).await
     }
 
-    fn rootlist(&self) -> String {
+    /// Inserts raw entries, such as folder markers, at the top of the
+    /// rootlist; anywhere else would need the list's revision. For tests
+    /// that need a folder.
+    #[doc(hidden)]
+    pub async fn add_to_rootlist_top(&self, uris: &[&str]) -> Result<()> {
+        let mut add = Add::new();
+        add.items = uris.iter().map(|uri| item((*uri).into())).collect();
+        add.set_add_first(true);
+        self.change(&self.rootlist_changes(), added(add)).await
+    }
+
+    /// Removes raw rootlist entries by URI. For tests that need a folder.
+    #[doc(hidden)]
+    pub async fn remove_from_rootlist(&self, uris: &[&str]) -> Result<()> {
+        let uris = uris.iter().map(|uri| (*uri).to_owned());
+        self.change(&self.rootlist_changes(), removed(uris)).await
+    }
+
+    fn rootlist_changes(&self) -> String {
         format!(
             "/playlist/v2/user/{}/rootlist/changes",
             self.0.session().username()

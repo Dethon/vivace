@@ -1,6 +1,6 @@
 //! Developer tool exercising the engine against a real account.
 //!
-//!   cli library | home | shows | episodes | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
+//!   cli library | home | shows | episodes | folder-test | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
 //!   cli listen <context uri> [seconds]     plays and prints what happens
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
@@ -285,6 +285,31 @@ async fn run() -> Fallible<()> {
             println!(
                 "after deleting, in library: {}",
                 in_library(api.playlists().await?)
+            );
+        }
+        ["folder-test"] => {
+            // Adds an empty folder at the top of the library, reads it back
+            // and removes it again.
+            let (start, end) = (
+                "spotify:start-group:0f1c44e0a1b2c3d4:Vivace+test+folder",
+                "spotify:end-group:0f1c44e0a1b2c3d4",
+            );
+            api.add_to_rootlist_top(&[start, end]).await?;
+            let rootlist = api.rootlist().await?;
+            println!("folders: {:?}", rootlist.folders);
+            for placed in rootlist.layout.iter().take(3) {
+                let name = match placed.item {
+                    vivace_core::model::Placement::Playlist(index) => {
+                        &rootlist.playlists[index].name
+                    }
+                    vivace_core::model::Placement::Folder(index) => &rootlist.folders[index].name,
+                };
+                println!("  {:?} {name:?} in folder {:?}", placed.item, placed.folder);
+            }
+            api.remove_from_rootlist(&[start, end]).await?;
+            println!(
+                "after removing: {} folders",
+                api.rootlist().await?.folders.len()
             );
         }
         ["delete-playlist", id] => {

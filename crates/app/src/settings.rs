@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vivace_core::{Config, Quality};
 
+use crate::library::Sort;
+
 const FILE_NAME: &str = "settings.json";
 // Earlier versions stored the default name; every computer shared it.
 const OLD_DEFAULT_NAME: &str = "Vivace";
@@ -24,6 +26,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// A notification names each new song, where the system shows them.
     pub notify_song_changes: bool,
+    /// How Your Library is ordered.
+    pub library_sort: Sort,
 }
 
 impl Default for Settings {
@@ -36,6 +40,7 @@ impl Default for Settings {
             close_to_tray: false,
             // As in Spotify's Linux app.
             notify_song_changes: true,
+            library_sort: Sort::default(),
         }
     }
 }
@@ -140,6 +145,7 @@ mod tests {
             device_name: Some("Study".into()),
             close_to_tray: true,
             notify_song_changes: false,
+            library_sort: Sort::Alphabetical,
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), settings);

@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Icons, Icon, Cover } from "theme.slint";
+import { Theme, Icons, Icon, Cover, Emblem } from "theme.slint";
 import { Library, Nav, LibraryItem } from "types.slint";
 
 component NavButton inherits Rectangle {
@@ -67,7 +67,7 @@ component LibraryRow inherits Rectangle {
             }
 
             MenuItem {
-                title: root.item.owned ? "Delete" : "Remove from Your Library";
+                title: root.item.remove-label;
                 activated => {
                     root.remove();
                 }
@@ -85,6 +85,7 @@ component LibraryRow inherits Rectangle {
                 Cover {
                     source: root.item.cover;
                     size: 40px;
+                    round: root.item.round;
                     emblem: root.item.emblem;
                 }
             }
@@ -124,6 +125,31 @@ component LibraryRow inherits Rectangle {
     }
 }
 
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    width: text.preferred-width + 14px;
+    height: 28px;
+    border-radius: 14px;
+    background: root.selected ? Theme.text : touch.has-hover ? Theme.surface-active : Theme.surface-hover;
+
+    text := Text {
+        text: root.label;
+        color: root.selected ? Theme.on-accent : Theme.text;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
 export component Sidebar inherits Rectangle {
     background: Theme.surface;
     border-radius: 8px;
@@ -141,16 +167,129 @@ export component Sidebar inherits Rectangle {
             }
         }
 
-        Rectangle {
+        HorizontalLayout {
             height: 36px;
+            padding-left: 12px;
+            padding-right: 4px;
 
             Text {
-                x: 12px;
                 text: "Your Library";
                 color: Theme.text-muted;
                 font-size: 12px;
                 font-weight: 700;
                 vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+
+            sort := Rectangle {
+                width: sort-label.preferred-width + 34px;
+                border-radius: Theme.radius;
+                background: sort-touch.has-hover ? Theme.surface-hover : transparent;
+
+                sort-menu := ContextMenuArea {
+                    Menu {
+                        for label[index] in Library.sorts: MenuItem {
+                            title: label;
+                            checkable: true;
+                            checked: index == Library.sort;
+                            activated => {
+                                Library.set-sort(index);
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+
+                    sort-label := Text {
+                        text: Library.sorts[Library.sort];
+                        color: sort-touch.has-hover ? Theme.text : Theme.text-muted;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        Icon {
+                            path: Icons.sort;
+                            size: 14px;
+                            tint: sort-touch.has-hover ? Theme.text : Theme.text-muted;
+                        }
+                    }
+                }
+
+                sort-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        sort-menu.show({ x: 0, y: self.height });
+                    }
+                }
+            }
+        }
+
+        if Library.folder == "": Flickable {
+            height: 36px;
+            content-width: chips.preferred-width;
+
+            chips := HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                spacing: 4px;
+                alignment: start;
+
+                for label[index] in ["Playlists", "Albums", "Artists", "Podcasts"]: VerticalLayout {
+                    alignment: center;
+
+                    Chip {
+                        label: label;
+                        selected: Library.filter == index;
+                        clicked => {
+                            Library.set-filter(Library.filter == index ? -1 : index);
+                        }
+                    }
+                }
+            }
+        }
+
+        if Library.folder != "": Rectangle {
+            height: 36px;
+            border-radius: Theme.radius;
+            background: up-touch.has-hover ? Theme.surface-hover : transparent;
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 8px;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Icon {
+                        path: Icons.back;
+                        size: 18px;
+                        tint: Theme.text;
+                    }
+                }
+
+                Text {
+                    text: Library.folder;
+                    color: Theme.text;
+                    font-size: 14px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            up-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    Library.close-folder();
+                }
             }
         }
 

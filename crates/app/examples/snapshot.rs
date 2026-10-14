@@ -99,32 +99,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.global::<Session>().set_connected(true);
 
+    // Collections, a folder, playlists, an album and a round artist.
     let library: Vec<LibraryItem> = (0..9)
         .map(|index| LibraryItem {
             title: match index {
                 0 => "Liked Songs",
                 1 => "Your Episodes",
+                2 => "Road trips",
+                7 => "Discovery",
+                8 => "Daft Punk",
                 _ => ["Late Night Drive", "Road Trip", "Focus"][index % 3],
             }
             .into(),
-            subtitle: ["Playlist · 83 songs", "Playlist · listener"][index % 2].into(),
+            subtitle: match index {
+                2 => "Folder · 4 items",
+                7 => "Album · Daft Punk",
+                8 => "Artist",
+                _ => ["Playlist · 83 songs", "Playlist · listener"][index % 2],
+            }
+            .into(),
             cover: if index <= 2 {
                 Image::default()
             } else {
                 cover(index as u32 + 20, 40)
             },
+            round: index == 8,
             emblem: match index {
                 0 => Emblem::LikedSongs,
                 1 => Emblem::YourEpisodes,
+                2 => Emblem::Folder,
                 _ => Emblem::None,
             },
             owned: index % 2 == 1,
-            removable: index > 1,
-            selected: index == 2,
+            removable: index > 2,
+            remove_label: "Remove from Your Library".into(),
+            selected: index == 3,
         })
         .collect();
     ui.global::<Library>()
         .set_items(ModelRc::new(VecModel::from(library)));
+    ui.global::<Library>()
+        .set_sorts(ModelRc::new(VecModel::from(vec![
+            slint::SharedString::from("Custom order"),
+            "Recently added".into(),
+        ])));
+    if std::env::var_os("SNAPSHOT_FOLDER").is_some() {
+        ui.global::<Library>().set_folder("Road trips".into());
+    } else {
+        ui.global::<Library>().set_filter(0);
+    }
 
     let cards = |seed: u32, round: bool| -> ModelRc<CardData> {
         let cards: Vec<CardData> = (0..5)

@@ -6,12 +6,13 @@ use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
-    model::{Id, Image, ItemRef, Kind, Lyrics, Playlist, Progress, Saved, Track},
+    model::{Id, Image, ItemRef, Kind, Lyrics, Progress, Saved, Track},
 };
 
 use crate::{
     content::{Page, PageData, Saveable},
     images::{self, ImageKey},
+    library,
     media::MediaCommand,
 };
 
@@ -106,13 +107,14 @@ pub enum Update {
     /// Signing in failed; another attempt follows shortly.
     Failed(String),
     Library {
-        playlists: Vec<Playlist>,
+        contents: library::Contents,
         liked: Vec<Id>,
         /// Episodes in Your Episodes.
         episodes: Vec<Id>,
-        /// Saved albums, followed artists and followed podcasts.
-        saved: Vec<Id>,
     },
+    /// Something was saved to or removed from the library, which is worth
+    /// listing again.
+    LibraryChanged,
     Page {
         token: u64,
         result: Result<PageData, String>,
@@ -357,26 +359,8 @@ impl Session {
             }
             Request::Library => {
                 self.spawn(|api, _| async move {
-                    let library = tokio::try_join!(
-                        api.playlists(),
-                        api.saved(),
-                        api.followed_artists(),
-                        api.saved_shows(),
-                        api.saved_episodes()
-                    );
-                    match library {
-                        Ok((playlists, saved, artists, shows, episodes)) => Update::Library {
-                            playlists,
-                            liked: saved.tracks.iter().map(|saved| saved.id).collect(),
-                            episodes: available_episodes(&api, &episodes).await,
-                            saved: saved
-                                .albums
-                                .iter()
-                                .chain(&artists)
-                                .chain(&shows)
-                                .map(|saved| saved.id)
-                                .collect(),
-                        },
+                    match load_library(&api).await {
+                        Ok(update) => update,
                         Err(error) => {
                             Update::Notice(format!("Couldn't load your library: {error}"))
                         }
@@ -489,9 +473,17 @@ impl Session {
                         Saveable::Artist(id) => api.set_followed(id, saved).await,
                         Saveable::Show(id) => api.set_show_saved(id, saved).await,
                     };
-                    let failure = result.err()?;
-                    log::warn!("couldn't update the library: {failure}");
-                    Some(Update::SaveFailed { item, saved })
+                    match result {
+                        // Albums, artists and podcasts are listed in the sidebar.
+                        Ok(()) if !matches!(item, Saveable::Track(_) | Saveable::Episode(_)) => {
+                            Some(Update::LibraryChanged)
+                        }
+                        Ok(()) => None,
+                        Err(failure) => {
+                            log::warn!("couldn't update the library: {failure}");
+                            Some(Update::SaveFailed { item, saved })
+                        }
+                    }
                 });
                 Ok(())
             }
@@ -704,6 +696,42 @@ async fn resolve_queue(api: &Api, queue: Queue, sequence: u64) -> Option<Update>
         tracks,
         queued,
     }))
+}
+
+/// Everything Your Library lists, with what the sidebar shows of each.
+async fn load_library(api: &Api) -> vivace_core::Result<Update> {
+    let (rootlist, saved, artists, shows, episodes) = tokio::try_join!(
+        api.rootlist(),
+        api.saved(),
+        api.followed_artists(),
+        api.saved_shows(),
+        api.saved_episodes()
+    )?;
+    let ids = |saved: &[Saved]| saved.iter().map(|saved| saved.id).collect::<Vec<Id>>();
+    let (album_ids, artist_ids, show_ids) = (ids(&saved.albums), ids(&artists), ids(&shows));
+    let (album_details, artist_details, show_details) = tokio::try_join!(
+        api.albums(&album_ids),
+        api.artists(&artist_ids),
+        api.shows(&show_ids)
+    )?;
+    // Items Spotify no longer has come back empty and are left out.
+    fn dated<T>(details: Vec<Option<T>>, saved: &[Saved]) -> Vec<(T, i64)> {
+        details
+            .into_iter()
+            .zip(saved)
+            .filter_map(|(item, saved)| Some((item?, saved.added_at)))
+            .collect()
+    }
+    Ok(Update::Library {
+        contents: library::Contents {
+            rootlist,
+            albums: dated(album_details, &saved.albums),
+            artists: dated(artist_details, &artists),
+            shows: dated(show_details, &shows),
+        },
+        liked: ids(&saved.tracks),
+        episodes: available_episodes(api, &episodes).await,
+    })
 }
 
 /// The saved episodes that still exist. Spotify keeps episodes taken down

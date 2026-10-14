@@ -70,12 +70,15 @@ export struct LibraryItem {
     title: string,
     subtitle: string,
     cover: image,
+    round: bool,
     emblem: Emblem,
     selected: bool,
     // A playlist the user owns: it can be renamed and deleted.
     owned: bool,
     // A playlist that can be taken out of the library.
     removable: bool,
+    // What taking it out is called: "Delete", "Unfollow"...
+    remove-label: string,
 }
 
 export enum RepeatMode { off, all, one }
@@ -168,6 +171,16 @@ export global Nav {
 
 export global Library {
     in property <[LibraryItem]> items;
+    // The selected filter chip, or -1 to list everything.
+    in property <int> filter: -1;
+    in property <[string]> sorts;
+    in property <int> sort;
+    // The open folder's name; empty at the top level.
+    in property <string> folder;
+    callback set-filter(int);
+    callback set-sort(int);
+    // Goes up from the open folder.
+    callback close-folder();
     callback open(int);
     // Ask to rename, or to delete or unfollow, the playlist at this index.
     callback rename(int);

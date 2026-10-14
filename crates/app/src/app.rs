@@ -20,6 +20,7 @@ use crate::{
     content::{Card, Dates, Emblem, Page, PageData, Saveable, Section, TrackSection},
     format,
     images::{Images, Shape},
+    library::{self, Filter, Row as LibraryRow, Sort},
     media::{Attach, MediaCommand, MediaKeys},
     models::LazyModel,
     notify,
@@ -28,8 +29,6 @@ use crate::{
     tray::{self, Tray},
 };
 
-/// Library entries above the playlists: Liked Songs and Your Episodes.
-const COLLECTIONS: usize = 2;
 /// How long closing waits for the backend to record where an episode was left.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(3);
 const SEARCH_DELAY: Duration = Duration::from_millis(250);
@@ -98,7 +97,13 @@ struct State {
     cache: Vec<(Page, Rc<PageData>)>,
     ever_connected: bool,
 
-    playlists: Vec<Playlist>,
+    /// Everything in Your Library, and what of it the sidebar lists.
+    library: library::Contents,
+    library_rows: Vec<LibraryRow>,
+    library_filter: Filter,
+    library_sort: Sort,
+    /// The folder the sidebar shows the inside of.
+    library_folder: Option<usize>,
     username: String,
     liked: HashSet<Id>,
     /// Episodes in Your Episodes.
@@ -132,7 +137,8 @@ impl State {
 
     /// The playlists the user can add to: their own and collaborative ones.
     fn editable(&self) -> impl Iterator<Item = &Playlist> {
-        self.playlists
+        self.library
+            .playlists()
             .iter()
             .filter(|playlist| playlist.collaborative || *playlist.owner == *self.username)
     }
@@ -228,7 +234,11 @@ impl App {
                 columns: 2,
                 cache: Vec::new(),
                 ever_connected: false,
-                playlists: Vec::new(),
+                library: library::Contents::default(),
+                library_rows: Vec::new(),
+                library_filter: Filter::All,
+                library_sort: Sort::default(),
+                library_folder: None,
                 username: String::new(),
                 liked: HashSet::new(),
                 episodes: HashSet::new(),
@@ -525,10 +535,46 @@ impl App {
             let app = Rc::downgrade(self);
             move |index| {
                 if let Some(app) = app.upgrade() {
-                    app.ask_about_playlist(index as usize, false);
+                    app.remove_library_item(index as usize);
                 }
             }
         });
+        library.set_sorts(ModelRc::new(slint::VecModel::from(
+            Sort::ALL
+                .iter()
+                .map(|sort| SharedString::from(sort.label()))
+                .collect::<Vec<_>>(),
+        )));
+        library.on_set_filter({
+            let app = Rc::downgrade(self);
+            move |chip| {
+                if let Some(app) = app.upgrade() {
+                    app.state.borrow_mut().library_filter = Filter::from_chip(chip);
+                    app.show_library();
+                }
+            }
+        });
+        library.on_set_sort({
+            let app = Rc::downgrade(self);
+            move |index| {
+                let Some(app) = app.upgrade() else { return };
+                let sort = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| Sort::ALL.get(index).copied())
+                    .unwrap_or_default();
+                app.state.borrow_mut().library_sort = sort;
+                Settings::update(|settings| settings.library_sort = sort);
+                app.show_library();
+            }
+        });
+        library.on_close_folder(self.handler(|app| {
+            {
+                let mut state = app.state.borrow_mut();
+                let folder = state.library_folder;
+                state.library_folder = folder.and_then(|folder| state.library.parent(folder));
+            }
+            app.show_library();
+        }));
         ui.global::<Dialog>().on_confirmed({
             let app = Rc::downgrade(self);
             move |text| {
@@ -684,7 +730,9 @@ impl App {
                     let mut state = self.state.borrow_mut();
                     state.ever_connected = false;
                     state.username.clear();
-                    state.playlists.clear();
+                    state.library = library::Contents::default();
+                    state.library_rows.clear();
+                    state.library_folder = None;
                     state.liked.clear();
                     state.episodes.clear();
                     state.saved.clear();
@@ -727,20 +775,31 @@ impl App {
                 }
             }
             Update::Library {
-                playlists,
+                contents,
                 liked,
                 episodes,
-                saved,
             } => {
-                let len = {
+                {
                     let mut state = self.state.borrow_mut();
-                    state.playlists = playlists;
+                    state.saved = contents
+                        .albums
+                        .iter()
+                        .map(|(album, _)| album.id)
+                        .chain(contents.artists.iter().map(|(artist, _)| artist.id))
+                        .chain(contents.shows.iter().map(|(show, _)| show.id))
+                        .collect();
+                    // The open folder may be gone, or another one by now.
+                    if state
+                        .library_folder
+                        .is_some_and(|folder| folder >= contents.rootlist.folders.len())
+                    {
+                        state.library_folder = None;
+                    }
+                    state.library = contents;
                     state.liked = liked.into_iter().collect();
                     state.episodes = episodes.into_iter().collect();
-                    state.saved = saved.into_iter().collect();
-                    state.playlists.len() + COLLECTIONS
-                };
-                self.library.reset(len);
+                }
+                self.show_library();
                 self.rows.refresh_all();
                 self.queue.refresh_all();
                 self.show_player_liked();
@@ -791,6 +850,7 @@ impl App {
             Update::Repeat(repeat) => self.set_repeat(repeat),
             Update::Queue(queue) => self.queue_changed(queue),
             Update::Connect(connect) => self.connect_changed(connect),
+            Update::LibraryChanged => self.request(Request::Library),
             Update::SaveFailed { item, saved } => {
                 self.set_saved(item, !saved);
                 self.notice("Couldn't update your library");
@@ -1216,11 +1276,11 @@ impl App {
                 None => Vec::new(),
             };
             let library: Vec<usize> = state
-                .playlists
+                .library_rows
                 .iter()
                 .enumerate()
-                .filter(|(_, playlist)| shows(&self.playlist_image(playlist, false)))
-                .map(|(index, _)| index + 1)
+                .filter(|(_, row)| shows(&self.library_image(&state, **row, false)))
+                .map(|(index, _)| index)
                 .collect();
             let queue: Vec<usize> = state
                 .queue
@@ -1428,19 +1488,82 @@ impl App {
     }
 
     fn open_library_item(&self, index: usize) {
-        let page = match index.checked_sub(COLLECTIONS) {
-            None if index == 0 => Some(Page::Liked),
-            None => Some(Page::YourEpisodes),
-            Some(index) => self
-                .state
-                .borrow()
-                .playlists
-                .get(index)
-                .map(|playlist| Page::Playlist(playlist.id)),
+        let page = {
+            let mut state = self.state.borrow_mut();
+            let Some(&row) = state.library_rows.get(index) else {
+                return;
+            };
+            let library = &state.library;
+            match row {
+                LibraryRow::LikedSongs => Page::Liked,
+                LibraryRow::YourEpisodes => Page::YourEpisodes,
+                LibraryRow::Playlist(index) => Page::Playlist(library.playlists()[index].id),
+                LibraryRow::Album(index) => Page::Album(library.albums[index].0.id),
+                LibraryRow::Artist(index) => Page::Artist(library.artists[index].0.id),
+                LibraryRow::Show(index) => Page::Show(library.shows[index].0.id),
+                LibraryRow::Folder(folder) => {
+                    state.library_folder = Some(folder);
+                    drop(state);
+                    return self.show_library();
+                }
+            }
         };
-        if let Some(page) = page {
-            self.open(page);
-        }
+        self.open(page);
+    }
+
+    /// Lists the library as the sidebar's filter, order and folder ask.
+    fn show_library(&self) {
+        let (len, chip, sort, folder) = {
+            let mut state = self.state.borrow_mut();
+            let rows = state.library.rows(
+                state.library_filter,
+                state.library_sort,
+                state.library_folder,
+            );
+            state.library_rows = rows;
+            let folder = state
+                .library_folder
+                .map(|folder| state.library.rootlist.folders[folder].name.to_string())
+                .unwrap_or_default();
+            let sort = Sort::ALL
+                .iter()
+                .position(|sort| *sort == state.library_sort)
+                .unwrap_or_default();
+            (
+                state.library_rows.len(),
+                state.library_filter.chip(),
+                sort as i32,
+                folder,
+            )
+        };
+        self.with_ui(|ui| {
+            let library = ui.global::<Library>();
+            library.set_filter(chip);
+            library.set_sort(sort);
+            library.set_folder(folder.into());
+        });
+        self.library.reset(len);
+    }
+
+    /// Takes an entry out of the library: playlists after asking, albums,
+    /// artists and podcasts at once, as in Spotify's apps.
+    fn remove_library_item(&self, index: usize) {
+        let item = {
+            let state = self.state.borrow();
+            let library = &state.library;
+            match state.library_rows.get(index) {
+                Some(LibraryRow::Album(index)) => Saveable::Album(library.albums[*index].0.id),
+                Some(LibraryRow::Artist(index)) => Saveable::Artist(library.artists[*index].0.id),
+                Some(LibraryRow::Show(index)) => Saveable::Show(library.shows[*index].0.id),
+                Some(LibraryRow::Playlist(_)) => {
+                    drop(state);
+                    return self.ask_about_playlist(index, false);
+                }
+                _ => return,
+            }
+        };
+        self.set_saved(item, false);
+        self.request(Request::SetSaved { item, saved: false });
     }
 
     /// Opens the page a section's "Show all" link leads to.
@@ -1599,12 +1722,10 @@ impl App {
     fn ask_about_playlist(&self, index: usize, rename: bool) {
         let (playlist, name, owned) = {
             let state = self.state.borrow();
-            let Some(playlist) = index
-                .checked_sub(COLLECTIONS)
-                .and_then(|index| state.playlists.get(index))
-            else {
+            let Some(LibraryRow::Playlist(playlist)) = state.library_rows.get(index) else {
                 return;
             };
+            let playlist = &state.library.playlists()[*playlist];
             (
                 playlist.id,
                 playlist.name.to_string(),
@@ -1670,6 +1791,7 @@ impl App {
     }
 
     fn show_settings(&self, settings: &Settings) {
+        self.state.borrow_mut().library_sort = settings.library_sort;
         self.set_tray(settings.close_to_tray && tray::SUPPORTED);
         self.notify_song_changes
             .set(settings.notify_song_changes && notify::SUPPORTED);
@@ -1795,14 +1917,21 @@ impl App {
             Saveable::Track(track) | Saveable::Episode(track) => {
                 self.refresh_track(track);
                 self.show_player_liked();
-                // The collection's library entry counts its items: Liked
-                // Songs is the first entry, Your Episodes the second.
-                let entry = if matches!(item, Saveable::Episode(_)) {
-                    1
+                // The collection's library entry counts its items.
+                let collection = if matches!(item, Saveable::Episode(_)) {
+                    LibraryRow::YourEpisodes
                 } else {
-                    0
+                    LibraryRow::LikedSongs
                 };
-                self.library.refresh(entry);
+                let entry = self
+                    .state
+                    .borrow()
+                    .library_rows
+                    .iter()
+                    .position(|row| *row == collection);
+                if let Some(entry) = entry {
+                    self.library.refresh(entry);
+                }
             }
             // The header is the page's first row.
             Saveable::Album(_) | Saveable::Artist(_) | Saveable::Show(_) => self.rows.refresh(0),
@@ -2013,42 +2142,108 @@ impl App {
 
     fn library_item(&self, index: usize) -> Option<LibraryItem> {
         let state = self.state.borrow();
+        let row = *state.library_rows.get(index)?;
         let current = &state.history[state.position].page;
-        Some(match index.checked_sub(COLLECTIONS) {
-            None if index == 0 => LibraryItem {
+        let library = &state.library;
+        let cover = self.images.get(
+            self.library_image(&state, row, true).as_ref(),
+            self.shape(THUMBNAIL, matches!(row, LibraryRow::Artist(_))),
+        );
+        let item = LibraryItem {
+            cover,
+            ..LibraryItem::default()
+        };
+        Some(match row {
+            LibraryRow::LikedSongs => LibraryItem {
                 title: "Liked Songs".into(),
                 subtitle: format!("Playlist · {}", format::count(state.liked.len(), "song")).into(),
-                cover: slint::Image::default(),
                 emblem: EmblemKind::LikedSongs,
                 selected: *current == Page::Liked,
-                owned: false,
-                removable: false,
+                ..item
             },
-            None => LibraryItem {
+            LibraryRow::YourEpisodes => LibraryItem {
                 title: "Your Episodes".into(),
                 subtitle: format::count(state.episodes.len(), "episode").into(),
-                cover: slint::Image::default(),
                 emblem: EmblemKind::YourEpisodes,
                 selected: *current == Page::YourEpisodes,
-                owned: false,
-                removable: false,
+                ..item
             },
-            Some(index) => {
-                let playlist = state.playlists.get(index)?;
+            LibraryRow::Folder(folder) => LibraryItem {
+                title: library.rootlist.folders[folder].name.as_ref().into(),
+                subtitle: format!(
+                    "Folder · {}",
+                    format::count(library.folder_size(folder), "item")
+                )
+                .into(),
+                emblem: EmblemKind::Folder,
+                ..item
+            },
+            LibraryRow::Playlist(index) => {
+                let playlist = &library.playlists()[index];
+                let owned = *playlist.owner == *state.username;
                 LibraryItem {
                     title: playlist.name.as_ref().into(),
                     subtitle: format!("Playlist · {}", playlist.owner).into(),
-                    cover: self.images.get(
-                        self.playlist_image(playlist, true).as_ref(),
-                        self.shape(THUMBNAIL, false),
-                    ),
-                    emblem: EmblemKind::None,
                     selected: *current == Page::Playlist(playlist.id),
-                    owned: *playlist.owner == *state.username,
+                    owned,
                     removable: true,
+                    remove_label: if owned {
+                        "Delete"
+                    } else {
+                        "Remove from Your Library"
+                    }
+                    .into(),
+                    ..item
+                }
+            }
+            LibraryRow::Album(index) => {
+                let album = &library.albums[index].0;
+                let artists: Vec<&str> = album.artists.iter().map(|artist| &*artist.name).collect();
+                LibraryItem {
+                    title: album.name.as_ref().into(),
+                    subtitle: format!("Album · {}", artists.join(", ")).into(),
+                    selected: *current == Page::Album(album.id),
+                    removable: true,
+                    remove_label: "Remove from Your Library".into(),
+                    ..item
+                }
+            }
+            LibraryRow::Artist(index) => {
+                let artist = &library.artists[index].0;
+                LibraryItem {
+                    title: artist.name.as_ref().into(),
+                    subtitle: "Artist".into(),
+                    round: true,
+                    selected: *current == Page::Artist(artist.id),
+                    removable: true,
+                    remove_label: "Unfollow".into(),
+                    ..item
+                }
+            }
+            LibraryRow::Show(index) => {
+                let show = &library.shows[index].0;
+                LibraryItem {
+                    title: show.name.as_ref().into(),
+                    subtitle: format!("Podcast · {}", show.publisher).into(),
+                    selected: *current == Page::Show(show.id),
+                    removable: true,
+                    remove_label: "Unfollow".into(),
+                    ..item
                 }
             }
         })
+    }
+
+    /// The artwork of a library entry; collections and folders have none.
+    fn library_image(&self, state: &State, row: LibraryRow, fetch: bool) -> Option<Image> {
+        let library = &state.library;
+        match row {
+            LibraryRow::LikedSongs | LibraryRow::YourEpisodes | LibraryRow::Folder(_) => None,
+            LibraryRow::Playlist(index) => self.playlist_image(&library.playlists()[index], fetch),
+            LibraryRow::Album(index) => library.albums[index].0.cover.clone(),
+            LibraryRow::Artist(index) => library.artists[index].0.image.clone(),
+            LibraryRow::Show(index) => library.shows[index].0.image.clone(),
+        }
     }
 
     /// A card's artwork, falling back to a stand-in for picture-less playlists.

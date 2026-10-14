@@ -262,6 +262,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         ),
         (
+            "9c-library-albums",
+            1000,
+            Box::new(|ui| ui.global::<Library>().invoke_set_filter(1)),
+        ),
+        (
+            "9d-library-podcasts",
+            1000,
+            Box::new(|ui| ui.global::<Library>().invoke_set_filter(3)),
+        ),
+        (
+            "9e-library-alphabetical",
+            1000,
+            // The order is saved, so the next step puts it back.
+            Box::new(|ui| {
+                ui.global::<Library>().invoke_set_filter(-1);
+                ui.global::<Library>().invoke_set_sort(2);
+            }),
+        ),
+        (
+            "9f-library-custom",
+            500,
+            Box::new(|ui| ui.global::<Library>().invoke_set_sort(0)),
+        ),
+        (
             "10-lyrics-search",
             4000,
             Box::new(|ui| {

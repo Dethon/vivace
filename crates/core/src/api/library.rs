@@ -1,17 +1,21 @@
 use bytes::Bytes;
 use http::Method;
-use librespot_protocol::playlist4_external::SelectedListContent;
+use librespot_protocol::playlist4_external::{ListItems, SelectedListContent};
 use prost::Message as _;
 use protobuf::Message as _;
 
 use super::{Api, transport::decode};
 use crate::{
     Result,
-    model::{Id, Image, Kind, Playlist, Saved},
+    model::{Folder, Id, Image, Kind, Placed, Placement, Playlist, Rootlist, Saved},
 };
 
 const COLLECTION: &str = "application/vnd.collection-v2.spotify.proto";
 const ROOTLIST_PAGE: usize = 1000;
+// A folder in the rootlist is the span between these markers; the start
+// carries its id and URL-encoded name.
+const FOLDER_START: &str = "spotify:start-group:";
+const FOLDER_END: &str = "spotify:end-group:";
 const COLLECTION_PAGE: i32 = 2000;
 // Collection sets: liked tracks and saved albums share one, followed artists have their own.
 const SET_ITEMS: &str = "collection";
@@ -70,8 +74,15 @@ pub struct SavedItems {
 impl Api {
     /// The user's playlists in their own order, with folders flattened.
     pub async fn playlists(&self) -> Result<Vec<Playlist>> {
+        Ok(self.rootlist().await?.playlists)
+    }
+
+    /// The user's playlists and folders in their own order.
+    pub async fn rootlist(&self) -> Result<Rootlist> {
         let user = self.0.session().username();
-        let mut playlists = Vec::new();
+        let mut rootlist = Rootlist::default();
+        // Folders the next entry is inside, innermost last.
+        let mut open: Vec<usize> = Vec::new();
         let mut from = 0;
         loop {
             let endpoint = format!(
@@ -84,32 +95,11 @@ impl Api {
             let list = SelectedListContent::parse_from_bytes(&response).map_err(decode)?;
             let contents = &list.contents;
 
-            let metas = contents
-                .meta_items
-                .iter()
-                .map(Some)
-                .chain(std::iter::repeat(None));
-            playlists.extend(contents.items.iter().zip(metas).filter_map(|(item, meta)| {
-                let id = Kind::Playlist.id(item.uri())?;
-                let meta = meta?;
-                Some(Playlist {
-                    id,
-                    name: meta.attributes.name().into(),
-                    owner: meta.owner_username().into(),
-                    description: meta.attributes.description().into(),
-                    length: meta.length().try_into().unwrap_or_default(),
-                    image: meta
-                        .attributes
-                        .picture_size
-                        .first()
-                        .map(|size| Image::from_url(size.url())),
-                    collaborative: meta.attributes.collaborative(),
-                })
-            }));
+            read_rootlist(contents, &mut rootlist, &mut open);
 
             from += contents.items.len();
             if contents.items.is_empty() || !contents.truncated() {
-                return Ok(playlists);
+                return Ok(rootlist);
             }
         }
     }
@@ -258,5 +248,141 @@ impl Api {
             }
             request.pagination_token = page.next_page_token;
         }
+    }
+}
+/// Adds one page of the rootlist to `rootlist`. `open` holds the folders
+/// the page starts inside, innermost last, and those it ends inside.
+fn read_rootlist(contents: &ListItems, rootlist: &mut Rootlist, open: &mut Vec<usize>) {
+    for (position, item) in contents.items.iter().enumerate() {
+        let added_at = item.attributes.timestamp() / 1000;
+        let folder = open.last().copied();
+        let uri = item.uri();
+        if let Some((id, name)) = uri
+            .strip_prefix(FOLDER_START)
+            .and_then(|folder| folder.split_once(':'))
+        {
+            open.push(rootlist.folders.len());
+            rootlist.layout.push(Placed {
+                item: Placement::Folder(rootlist.folders.len()),
+                folder,
+                added_at,
+            });
+            rootlist.folders.push(Folder {
+                id: id.into(),
+                name: url_decoded(name).into(),
+            });
+        } else if uri.starts_with(FOLDER_END) {
+            open.pop();
+        } else if let Some(id) = Kind::Playlist.id(uri)
+            // Every entry has its metadata at the same position, markers too.
+            && let Some(meta) = contents.meta_items.get(position)
+        {
+            rootlist.layout.push(Placed {
+                item: Placement::Playlist(rootlist.playlists.len()),
+                folder,
+                added_at,
+            });
+            rootlist.playlists.push(Playlist {
+                id,
+                name: meta.attributes.name().into(),
+                owner: meta.owner_username().into(),
+                description: meta.attributes.description().into(),
+                length: meta.length().try_into().unwrap_or_default(),
+                image: meta
+                    .attributes
+                    .picture_size
+                    .first()
+                    .map(|size| Image::from_url(size.url())),
+                collaborative: meta.attributes.collaborative(),
+            });
+        }
+    }
+}
+
+/// Decodes a folder name as the rootlist stores it, `+` for spaces.
+fn url_decoded(text: &str) -> String {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = tail;
+        match byte {
+            b'+' => bytes.push(b' '),
+            b'%' => match rest.get(..2).and_then(|hex| std::str::from_utf8(hex).ok()) {
+                Some(hex) if let Ok(value) = u8::from_str_radix(hex, 16) => {
+                    bytes.push(value);
+                    rest = &rest[2..];
+                }
+                _ => bytes.push(byte),
+            },
+            _ => bytes.push(byte),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use librespot_protocol::playlist4_external::{Item, MetaItem};
+
+    use super::*;
+
+    fn entry(uri: &str, name: &str) -> (Item, MetaItem) {
+        let mut item = Item::new();
+        item.set_uri(uri.into());
+        let mut meta = MetaItem::new();
+        meta.attributes
+            .mut_or_insert_default()
+            .set_name(name.into());
+        (item, meta)
+    }
+
+    #[test]
+    fn folders_hold_what_lies_between_their_markers() {
+        let entries = [
+            entry("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", "Top"),
+            entry("spotify:start-group:aa:Road+trip", ""),
+            entry("spotify:playlist:37i9dQZF1DX0XUsuxWHRQd", "Driving"),
+            entry("spotify:start-group:bb:Night", ""),
+            entry("spotify:playlist:37i9dQZF1DWZd79rJ6a7lp", "Late"),
+            entry("spotify:end-group:bb", ""),
+            entry("spotify:end-group:aa", ""),
+            entry("spotify:playlist:37i9dQZF1DX4sWSpwq3LiO", "Calm"),
+        ];
+        let mut contents = ListItems::new();
+        for (item, meta) in entries {
+            contents.items.push(item);
+            contents.meta_items.push(meta);
+        }
+        let mut rootlist = Rootlist::default();
+        let mut open = Vec::new();
+        read_rootlist(&contents, &mut rootlist, &mut open);
+
+        let names: Vec<&str> = rootlist.playlists.iter().map(|list| &*list.name).collect();
+        assert_eq!(names, ["Top", "Driving", "Late", "Calm"]);
+        assert_eq!(&*rootlist.folders[0].name, "Road trip");
+        let folders: Vec<(Placement, Option<usize>)> = rootlist
+            .layout
+            .iter()
+            .map(|placed| (placed.item, placed.folder))
+            .collect();
+        assert_eq!(
+            folders,
+            [
+                (Placement::Playlist(0), None),
+                (Placement::Folder(0), None),
+                (Placement::Playlist(1), Some(0)),
+                (Placement::Folder(1), Some(0)),
+                (Placement::Playlist(2), Some(1)),
+                (Placement::Playlist(3), None),
+            ]
+        );
+        assert!(open.is_empty());
+    }
+
+    #[test]
+    fn folder_names_are_url_decoded() {
+        assert_eq!(url_decoded("Road+trip%21"), "Road trip!");
+        assert_eq!(url_decoded("Caf%C3%A9+%26+co"), "Café & co");
+        assert_eq!(url_decoded("100%"), "100%");
     }
 }

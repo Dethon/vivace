@@ -246,6 +246,39 @@ pub struct PlaylistDetails {
     pub entries: Vec<PlaylistEntry>,
 }
 
+/// The user's playlists and the folders they sort them into.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Rootlist {
+    /// Every playlist in the user's order, as if there were no folders.
+    pub playlists: Vec<Playlist>,
+    pub folders: Vec<Folder>,
+    /// Each playlist and folder in the user's order, with the folder it is in.
+    pub layout: Vec<Placed>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folder {
+    pub id: Box<str>,
+    pub name: Box<str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    pub item: Placement,
+    /// Index into [`Rootlist::folders`] of the folder holding it, if any.
+    pub folder: Option<usize>,
+    /// When it was added, in Unix seconds; 0 when unknown.
+    pub added_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Index into [`Rootlist::playlists`].
+    Playlist(usize),
+    /// Index into [`Rootlist::folders`].
+    Folder(usize),
+}
+
 /// An item of the user's library with the time it was saved.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Saved {
