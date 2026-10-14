@@ -13,7 +13,7 @@ use librespot_core::{
 };
 use librespot_playback::{
     audio_backend::{self, Sink},
-    config::{AudioFormat, Bitrate, PlayerConfig},
+    config::{AudioFormat, Bitrate, PlayerConfig, VolumeCtrl},
     mixer::{self, Mixer, MixerConfig},
     player::{Player, PlayerEvent, PlayerEventChannel},
 };
@@ -247,7 +247,14 @@ impl Engine {
         }
         let session = Session::new(session_config, Some(cache));
 
-        let mixer = mixer::find(None).ok_or(crate::Error::NoAudioBackend)?(MixerConfig::default())?;
+        // librespot's default 60 dB logarithmic curve leaves the lower half of
+        // the slider nearly silent (50% is -30 dB). The cubic curve desktop
+        // mixers use keeps it audible: 50% is about -16 dB, 20% about -33 dB.
+        let mixer_config = MixerConfig {
+            volume_ctrl: VolumeCtrl::Cubic(VolumeCtrl::DEFAULT_DB_RANGE),
+            ..MixerConfig::default()
+        };
+        let mixer = mixer::find(None).ok_or(crate::Error::NoAudioBackend)?(mixer_config)?;
         let player_config = PlayerConfig {
             bitrate: match config.quality {
                 Quality::Low => Bitrate::Bitrate96,
