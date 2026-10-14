@@ -14,6 +14,12 @@ fn main() -> Result<(), slint::PlatformError> {
     vivace::tune_allocator();
     vivace::init_logging();
 
+    let background = std::env::args().any(|argument| argument == vivace::BACKGROUND_FLAG);
+    // Opened again: the running one comes forward, unless this is the login entry.
+    let Some(instance) = vivace::instance::claim(background) else {
+        return Ok(());
+    };
+
     let ui = MainWindow::new()?;
     ui.set_app_icon(vivace::app_icon());
     let settings = Settings::load();
@@ -43,8 +49,9 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.show()?;
+    instance.show_when_reopened(&ui);
     // Opened by the login entry: out of the way until wanted.
-    if std::env::args().any(|argument| argument == vivace::BACKGROUND_FLAG) {
+    if background {
         minimise_when_created(&ui);
         if app.keeps_running_in_tray() {
             app.start_in_tray();

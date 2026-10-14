@@ -5,6 +5,7 @@ mod backend;
 mod content;
 mod format;
 mod images;
+pub mod instance;
 mod library;
 mod logging;
 mod media;
