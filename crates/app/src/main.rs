@@ -36,6 +36,11 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     ui.show()?;
+    // Opened by the login entry: out of the way until wanted.
+    if std::env::args().any(|argument| argument == vivace::BACKGROUND_FLAG) {
+        ui.window().set_minimized(true);
+    }
+    vivace::refresh_login_entry();
     app.attach_media_keys();
     slint::run_event_loop()?;
     ui.hide()?;

@@ -181,12 +181,14 @@ export global SettingsView {
     in property <int> quality: 2;
     in property <bool> normalise;
     in property <string> device-name;
+    in property <bool> start-at-login;
     in property <string> username;
     in property <string> version;
     in property <string> data-folder;
     callback set-quality(int);
     callback set-normalise(bool);
     callback set-device-name(string);
+    callback set-start-at-login(bool);
     callback sign-out();
 }
 

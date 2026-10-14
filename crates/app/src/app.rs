@@ -23,6 +23,7 @@ use crate::{
     media::{Attach, MediaCommand, MediaKeys},
     models::LazyModel,
     settings::Settings,
+    system,
 };
 
 /// Library entries above the playlists: Liked Songs and Your Episodes.
@@ -330,6 +331,20 @@ impl App {
                 if let Some(app) = app.upgrade() {
                     app.change_settings(|settings| settings.set_device_name(&name));
                 }
+            }
+        });
+        settings.on_set_start_at_login({
+            let app = Rc::downgrade(self);
+            move |on| {
+                let Some(app) = app.upgrade() else { return };
+                if let Err(error) = system::set_start_at_login(on) {
+                    log::warn!("couldn't change the login entry: {error}");
+                    app.notice(&format!("Couldn't change how Vivace starts: {error}"));
+                }
+                app.with_ui(|ui| {
+                    ui.global::<SettingsView>()
+                        .set_start_at_login(system::starts_at_login())
+                });
             }
         });
         settings.on_sign_out(self.handler(Self::ask_to_sign_out));
@@ -1584,6 +1599,7 @@ impl App {
             });
             view.set_normalise(settings.normalise);
             view.set_device_name(settings.device_name().into());
+            view.set_start_at_login(system::starts_at_login());
         });
     }
 

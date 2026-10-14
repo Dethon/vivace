@@ -9,6 +9,7 @@ mod logging;
 mod media;
 mod models;
 mod settings;
+pub mod system;
 
 slint::include_modules!();
 
@@ -30,4 +31,5 @@ pub use app::App;
 pub use images::app_icon;
 pub use logging::init as init_logging;
 pub use settings::{Settings, WindowState};
+pub use system::{BACKGROUND_FLAG, refresh_login_entry};
 pub use vivace_core::{Config, limit_player_threads};

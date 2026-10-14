@@ -191,6 +191,26 @@ export component SettingsPage inherits Rectangle {
             }
 
             SectionTitle {
+                text: "Startup";
+            }
+
+            Setting {
+                title: "Open Vivace when you sign in";
+                detail: "Starts minimised when you sign in to your computer.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.start-at-login;
+                        toggled => {
+                            SettingsView.set-start-at-login(!SettingsView.start-at-login);
+                        }
+                    }
+                }
+            }
+
+            SectionTitle {
                 text: "Account";
             }
 
