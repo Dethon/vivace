@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vivace
+GenericName=Music Player
+Comment=Listen to Spotify with a light, fast player
+Exec=vivace
+Icon=vivace
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=Spotify;Music;Podcast;
