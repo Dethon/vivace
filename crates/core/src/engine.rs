@@ -239,6 +239,8 @@ impl Engine {
             own_clusters,
             closed: Some(closed),
             queue: None,
+            current: None,
+            pending: None,
             device_id: session.device_id().into(),
             _player: player,
         };
@@ -405,6 +407,10 @@ pub struct Events {
     own_clusters: mpsc::UnboundedReceiver<Cluster>,
     closed: Option<oneshot::Receiver<()>>,
     queue: Option<Queue>,
+    /// The item last announced with [`Event::Item`].
+    current: Option<ItemRef>,
+    /// An event held back while the item it belongs to is announced first.
+    pending: Option<Event>,
     device_id: Box<str>,
     // Keeps the event channel open for as long as events are being read.
     _player: Arc<Player>,
@@ -413,6 +419,9 @@ pub struct Events {
 impl Events {
     /// Waits for the next event; `None` after [`Event::Disconnected`].
     pub async fn recv(&mut self) -> Option<Event> {
+        if let Some(event) = self.pending.take() {
+            return Some(event);
+        }
         loop {
             let closed = self.closed.as_mut()?;
             tokio::select! {
@@ -420,7 +429,7 @@ impl Events {
                     self.closed = None;
                     return Some(Event::Disconnected);
                 }
-                event = self.player.recv() => match player_event(event?) {
+                event = self.player.recv() => match self.announce(event?) {
                     // The queue is re-sent with every state update; most are unchanged.
                     Some(Event::Queue(queue)) if self.queue.as_ref() == Some(&queue) => {}
                     Some(Event::Queue(queue)) => {
@@ -442,6 +451,28 @@ impl Events {
 }
 
 impl Events {
+    /// Converts a player event, first announcing the item it is about when
+    /// that changed. A track that was preloaded, as at every gapless
+    /// change, starts with `Playing` and no `Loading`.
+    fn announce(&mut self, event: PlayerEvent) -> Option<Event> {
+        let item = match &event {
+            PlayerEvent::Loading { track_id, .. }
+            | PlayerEvent::Playing { track_id, .. }
+            | PlayerEvent::Paused { track_id, .. } => ItemRef::from_uri(&track_id.to_uri()),
+            _ => None,
+        };
+        let converted = player_event(event);
+        match item {
+            Some(item) if self.current != Some(item) => {
+                self.current = Some(item);
+                // `Loading` converts to the announcement itself.
+                self.pending = converted.filter(|event| *event != Event::Item(item));
+                Some(Event::Item(item))
+            }
+            _ => converted,
+        }
+    }
+
     fn connect(&self, cluster: &Cluster) -> Event {
         Event::Connect(Connect::from_cluster(cluster, &self.device_id))
     }

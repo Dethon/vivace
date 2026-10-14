@@ -3,6 +3,7 @@
 //!   cli library | home | shows | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
 //!   cli listen <context uri> [seconds]     plays and prints what happens
+//!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!
@@ -274,6 +275,30 @@ async fn run() -> Fallible<()> {
         ["remote", rest @ ..] => {
             let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
             remote(&engine, &mut events, seconds).await?;
+        }
+        ["track-end", uri, position] => {
+            // Starts near the end of the second track to see the next one follow on.
+            engine.play_context(uri, Start::Index(1), false, Repeat::Off)?;
+            let position: u32 = position.parse()?;
+            let deadline = tokio::time::sleep(Duration::from_secs(30));
+            tokio::pin!(deadline);
+            let mut sought = false;
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => break,
+                    event = events.recv() => match event {
+                        // Seeking while the track is still loading is ignored, so wait until it plays.
+                        Some(Event::Position(played)) if played > 3000 && !sought => {
+                            sought = true;
+                            println!("-> seek to {position} ms");
+                            engine.seek(position)?;
+                        }
+                        Some(event @ (Event::Item(_) | Event::Playback(_) | Event::Stopped | Event::Position(_))) => println!("{event:?}"),
+                        Some(_) => {}
+                        None => break,
+                    },
+                }
+            }
         }
         ["listen", uri, rest @ ..] => {
             let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
