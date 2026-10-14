@@ -7,26 +7,19 @@ use serde::{Deserialize, Serialize};
 use vivace_core::{Config, Quality};
 
 const FILE_NAME: &str = "settings.json";
+// Earlier versions stored the default name; every computer shared it.
+const OLD_DEFAULT_NAME: &str = "Vivace";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub window: Option<WindowState>,
     pub quality: Quality,
     pub normalise: bool,
-    /// Name this computer has in Spotify's device list.
-    pub device_name: String,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            window: None,
-            quality: Quality::default(),
-            normalise: false,
-            device_name: Config::DEFAULT_DEVICE_NAME.into(),
-        }
-    }
+    /// Name this computer has in Spotify's device list, when the user chose
+    /// one; see [`Settings::device_name`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 /// The window's size in logical pixels. Its position is not kept: a saved
@@ -45,10 +38,28 @@ impl Settings {
         let Some(path) = path() else {
             return Self::default();
         };
-        fs::read(path)
+        let mut settings: Self = fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if settings.device_name.as_deref() == Some(OLD_DEFAULT_NAME) {
+            settings.device_name = None;
+        }
+        settings
+    }
+
+    /// The name this computer has in Spotify's device list.
+    pub fn device_name(&self) -> String {
+        self.device_name
+            .clone()
+            .unwrap_or_else(Config::default_device_name)
+    }
+
+    /// Names the device, or goes back to the default name for an empty one.
+    pub fn set_device_name(&mut self, name: &str) {
+        let name = name.trim();
+        self.device_name =
+            (!name.is_empty() && name != Config::default_device_name()).then(|| name.to_owned());
     }
 
     /// Changes the stored settings. They are re-read first because the
@@ -62,14 +73,14 @@ impl Settings {
 
     /// Whether the two differ in something the engine has to restart for.
     pub fn config_differs(&self, other: &Self) -> bool {
-        (self.quality, self.normalise, &self.device_name)
-            != (other.quality, other.normalise, &other.device_name)
+        (self.quality, self.normalise, self.device_name())
+            != (other.quality, other.normalise, other.device_name())
     }
 
     /// The engine configuration these settings ask for.
     pub fn config(&self) -> Config {
         Config {
-            device_name: self.device_name.clone(),
+            device_name: self.device_name(),
             quality: self.quality,
             normalise: self.normalise,
             persistent_device: true,
@@ -108,10 +119,22 @@ mod tests {
             }),
             quality: Quality::Normal,
             normalise: true,
-            device_name: "Study".into(),
+            device_name: Some("Study".into()),
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), settings);
+    }
+
+    #[test]
+    fn an_empty_or_default_name_means_the_default() {
+        let mut settings = Settings::default();
+        settings.set_device_name("  Study  ");
+        assert_eq!(settings.device_name.as_deref(), Some("Study"));
+        settings.set_device_name("");
+        assert_eq!(settings.device_name, None);
+        settings.set_device_name(&Config::default_device_name());
+        assert_eq!(settings.device_name, None);
+        assert_eq!(settings.device_name(), Config::default_device_name());
     }
 
     #[test]
@@ -128,7 +151,7 @@ mod tests {
             })
         );
         assert_eq!(settings.quality, Quality::VeryHigh);
-        assert_eq!(settings.device_name, "Vivace");
+        assert_eq!(settings.device_name, None);
         assert_eq!(
             serde_json::from_str::<Settings>("{}").unwrap(),
             Settings::default()

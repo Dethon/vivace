@@ -72,13 +72,21 @@ pub struct Config {
 }
 
 impl Config {
-    pub const DEFAULT_DEVICE_NAME: &str = "Vivace";
+    /// The name this computer has in Spotify's device lists unless the user
+    /// picks one: the app's with the computer's, so that each computer
+    /// running it can be told apart.
+    pub fn default_device_name() -> String {
+        match auth::machine_name() {
+            machine if machine.is_empty() => "Vivace".into(),
+            machine => format!("Vivace ({machine})"),
+        }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            device_name: Self::DEFAULT_DEVICE_NAME.into(),
+            device_name: Self::default_device_name(),
             quality: Quality::default(),
             normalise: false,
             persistent_device: true,

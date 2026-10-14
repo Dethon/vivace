@@ -46,6 +46,7 @@ async fn run() -> Fallible<()> {
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
     // A device of its own, so it can run next to the app and other copies.
     let mut config = Config {
+        device_name: "Vivace cli".into(),
         persistent_device: false,
         ..Config::default()
     };

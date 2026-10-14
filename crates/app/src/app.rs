@@ -327,9 +327,8 @@ impl App {
         settings.on_set_device_name({
             let app = Rc::downgrade(self);
             move |name| {
-                let name = name.trim().to_owned();
-                if let (Some(app), false) = (app.upgrade(), name.is_empty()) {
-                    app.change_settings(|settings| settings.device_name = name);
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.set_device_name(&name));
                 }
             }
         });
@@ -1584,7 +1583,7 @@ impl App {
                 Quality::VeryHigh => 2,
             });
             view.set_normalise(settings.normalise);
-            view.set_device_name(settings.device_name.as_str().into());
+            view.set_device_name(settings.device_name().into());
         });
     }
 
