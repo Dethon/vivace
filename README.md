@@ -1,7 +1,7 @@
 # Vivace
 
 A Spotify Premium client for Windows and Linux that keeps memory low: about
-13 MB of private memory on Windows when idle, where Spotify's own app takes
+14 MB of private memory on Windows when idle, where Spotify's own app takes
 hundreds. It streams at up to 320 kbps Ogg Vorbis through
 [librespot](https://github.com/librespot-org/librespot) and draws its
 interface with [Slint](https://slint.dev)'s software renderer.

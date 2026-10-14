@@ -6,6 +6,7 @@
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
+//!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next

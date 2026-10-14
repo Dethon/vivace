@@ -23,14 +23,26 @@ pub fn set_start_at_login(on: bool) -> io::Result<()> {
     }
 }
 
-/// Points an existing login entry at this copy of the app, in case it was
-/// moved since the entry was made.
+/// Points the login entry at this copy of the app when the program it
+/// names is gone, e.g. after the app was moved. An entry naming another
+/// copy that still exists is left alone, so running a second copy never
+/// changes which one starts at login.
 pub fn refresh_login_entry() {
-    if starts_at_login()
-        && let Err(error) = set_start_at_login(true)
-    {
+    let Some(command) = platform::entry_command() else {
+        return;
+    };
+    if program_of(&command).is_some_and(|program| std::path::Path::new(program).exists()) {
+        return;
+    }
+    if let Err(error) = set_start_at_login(true) {
         log::warn!("couldn't update the login entry: {error}");
     }
+}
+
+/// The program a login command runs: the quoted path at its start.
+fn program_of(command: &str) -> Option<&str> {
+    let quoted = command.trim_start().strip_prefix('"')?;
+    quoted.split_once('"').map(|(program, _)| program)
 }
 
 #[cfg(windows)]
@@ -50,6 +62,34 @@ mod platform {
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// The command the entry runs, if there is one.
+    pub fn entry_command() -> Option<String> {
+        let (key, value) = (wide(RUN_KEY), wide(VALUE));
+        let mut buffer = vec![0u16; 1024];
+        let mut size = (buffer.len() * 2) as u32;
+        // SAFETY: the strings are NUL-terminated and `size` is the
+        // buffer's length in bytes.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ,
+                null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return None;
+        }
+        let length = buffer
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(buffer.len());
+        Some(String::from_utf16_lossy(&buffer[..length]))
     }
 
     pub fn entry_exists() -> bool {
@@ -125,6 +165,15 @@ mod platform {
         entry().is_ok_and(|path| path.exists())
     }
 
+    /// The command the entry runs, if there is one.
+    pub fn entry_command() -> Option<String> {
+        let contents = std::fs::read_to_string(entry().ok()?).ok()?;
+        contents
+            .lines()
+            .find_map(|line| line.strip_prefix("Exec="))
+            .map(str::to_owned)
+    }
+
     pub fn write_entry(program: &str) -> io::Result<()> {
         let path = entry()?;
         if let Some(folder) = path.parent() {
@@ -145,5 +194,19 @@ mod platform {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             result => result,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_program_is_the_quoted_start_of_the_command() {
+        assert_eq!(
+            program_of(r#""C:\Program Files\Vivace\vivace.exe" --background"#),
+            Some(r"C:\Program Files\Vivace\vivace.exe")
+        );
+        assert_eq!(program_of("vivace --background"), None);
     }
 }
