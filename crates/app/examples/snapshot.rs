@@ -4,7 +4,8 @@
 //!
 //! `SNAPSHOT_QUEUE=1` opens the queue panel and `SNAPSHOT_SETTINGS=1` the
 //! settings page; `SNAPSHOT_CLICK=x,y` and
-//! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup.
+//! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup;
+//! `SNAPSHOT_HOVER=x,y` wiggles the pointer there to show hover state.
 //! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
 
 use std::rc::Rc;
@@ -289,6 +290,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.window().dispatch_event(event);
         }
         slint::platform::update_timers_and_animations();
+    }
+    // Moves the pointer about a point, as a hand does, to catch hover flicker.
+    if let Some((x, y)) = std::env::var("SNAPSHOT_HOVER")
+        .ok()
+        .as_deref()
+        .and_then(|point| point.split_once(','))
+    {
+        let (x, y): (f32, f32) = (x.trim().parse()?, y.trim().parse()?);
+        for offset in [0.0, 1.0, 2.0, 1.0] {
+            let position = LogicalPosition::new(x + offset, y);
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position });
+            slint::platform::update_timers_and_animations();
+        }
     }
     if std::env::var_os("SNAPSHOT_TIMING").is_some() {
         // A rough measure of how long drawing the whole window takes.
