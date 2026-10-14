@@ -1,6 +1,6 @@
 //! Developer tool exercising the engine against a real account.
 //!
-//!   cli library | home | shows | episodes | folder-test | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
+//!   cli library | home | shows | episodes | folder-test | folder-setup | folder-cleanup <playlist id> | show <id> | lyrics <track id> | save-test track|album|artist|show <id> | playlist-test | delete-playlist <id> | playlist <id> | album <id> | artist <id> | search <query>
 //!   cli watch [seconds]     prints Connect events without taking over playback
 //!   cli listen <context uri> [seconds]     plays and prints what happens
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
@@ -29,6 +29,10 @@ use vivace_core::{
 };
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
+
+// The folder the folder tests make and remove again.
+const FOLDER_START: &str = "spotify:start-group:0f1c44e0a1b2c3d4:Vivace+test+folder";
+const FOLDER_END: &str = "spotify:end-group:0f1c44e0a1b2c3d4";
 
 fn main() -> Fallible<()> {
     // SAFETY: nothing has started a thread yet.
@@ -291,26 +295,62 @@ async fn run() -> Fallible<()> {
         ["folder-test"] => {
             // Adds an empty folder at the top of the library, reads it back
             // and removes it again.
-            let (start, end) = (
-                "spotify:start-group:0f1c44e0a1b2c3d4:Vivace+test+folder",
-                "spotify:end-group:0f1c44e0a1b2c3d4",
-            );
-            api.add_to_rootlist_top(&[start, end]).await?;
+            let (start, end) = (FOLDER_START, FOLDER_END);
+            api.add_folder(start, end, 0, 0).await?;
             let rootlist = api.rootlist().await?;
             println!("folders: {:?}", rootlist.folders);
-            for placed in rootlist.layout.iter().take(3) {
-                let name = match placed.item {
-                    vivace_core::model::Placement::Playlist(index) => {
-                        &rootlist.playlists[index].name
-                    }
-                    vivace_core::model::Placement::Folder(index) => &rootlist.folders[index].name,
-                };
-                println!("  {:?} {name:?} in folder {:?}", placed.item, placed.folder);
-            }
             api.remove_from_rootlist(&[start, end]).await?;
             println!(
                 "after removing: {} folders",
                 api.rootlist().await?.folders.len()
+            );
+        }
+        ["folder-setup", rest @ ..] => {
+            // A collaborative playlist inside a folder, left in place to look
+            // at; `folder-cleanup <id>` removes both.
+            let playlist = match rest.first() {
+                Some(id) => Id::from_base62(id)?,
+                None => api.create_playlist("Vivace test").await?,
+            };
+            println!("playlist spotify:playlist:{playlist}");
+            // A new playlist goes first: wrap the first entry.
+            println!(
+                "folder: {:?}",
+                api.add_folder(FOLDER_START, FOLDER_END, 0, 1).await
+            );
+            println!(
+                "collaborative: {:?}",
+                api.set_collaborative(playlist, true).await
+            );
+            let rootlist = api.rootlist().await?;
+            for placed in rootlist.layout.iter().take(3) {
+                let name = match placed.item {
+                    vivace_core::model::Placement::Playlist(index) => {
+                        let playlist = &rootlist.playlists[index];
+                        format!(
+                            "{} (collaborative: {})",
+                            playlist.name, playlist.collaborative
+                        )
+                    }
+                    vivace_core::model::Placement::Folder(index) => {
+                        rootlist.folders[index].name.to_string()
+                    }
+                };
+                println!("  {:?} {name} in folder {:?}", placed.item, placed.folder);
+            }
+            println!(
+                "created spotify:playlist:{playlist}; clean up with folder-cleanup {playlist}"
+            );
+        }
+        ["folder-cleanup", id] => {
+            api.remove_from_rootlist(&[FOLDER_START, FOLDER_END])
+                .await?;
+            api.remove_playlist(Id::from_base62(id)?).await?;
+            let rootlist = api.rootlist().await?;
+            println!(
+                "now {} folders, {} playlists",
+                rootlist.folders.len(),
+                rootlist.playlists.len()
             );
         }
         ["delete-playlist", id] => {

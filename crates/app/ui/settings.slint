@@ -222,6 +222,15 @@ export component SettingsPage inherits Rectangle {
                         border-width: 1px;
                         border-color: name.has-focus ? Theme.text-muted : Theme.divider;
 
+                        // The text line is thinner than the box: a click
+                        // anywhere on the box starts typing.
+                        TouchArea {
+                            mouse-cursor: text;
+                            clicked => {
+                                name.focus();
+                            }
+                        }
+
                         name := TextInput {
                             x: 12px;
                             width: parent.width - 24px;

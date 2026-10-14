@@ -3,7 +3,7 @@
 use http::Method;
 use librespot_protocol::playlist4_external::{
     Add, CreateListReply, Delta, Item, ListAttributes, ListAttributesPartialState, ListChanges,
-    ListUpdateRequest, Op, Rem, UpdateListAttributes, op::Kind as OpKind,
+    ListUpdateRequest, Op, Rem, SelectedListContent, UpdateListAttributes, op::Kind as OpKind,
 };
 use protobuf::Message;
 
@@ -79,15 +79,49 @@ impl Api {
         self.change(&self.rootlist_changes(), removed(uris)).await
     }
 
-    /// Inserts raw entries, such as folder markers, at the top of the
-    /// rootlist; anywhere else would need the list's revision. For tests
-    /// that need a folder.
+    /// Puts the `length` rootlist entries from `index` into a folder,
+    /// given by its start and end markers. Both markers go in one change:
+    /// Spotify refuses a folder left open. For tests that need a folder.
     #[doc(hidden)]
-    pub async fn add_to_rootlist_top(&self, uris: &[&str]) -> Result<()> {
-        let mut add = Add::new();
-        add.items = uris.iter().map(|uri| item((*uri).into())).collect();
-        add.set_add_first(true);
-        self.change(&self.rootlist_changes(), added(add)).await
+    pub async fn add_folder(&self, start: &str, end: &str, index: i32, length: i32) -> Result<()> {
+        let marker = |uri: &str, at: i32| {
+            let mut add = Add::new();
+            add.items = vec![item(uri.into())];
+            add.set_from_index(at);
+            added(add)
+        };
+        // Placing entries by index needs the revision it counts from.
+        let endpoint = format!(
+            "/playlist/v2/user/{}/rootlist?from=0&length=1",
+            self.0.session().username()
+        );
+        let current = self
+            .0
+            .spclient(Method::GET, &endpoint, None, bytes::Bytes::new())
+            .await?;
+        let revision = SelectedListContent::parse_from_bytes(&current)
+            .map_err(decode)?
+            .revision()
+            .to_vec();
+        let ops = vec![marker(start, index), marker(end, index + length + 1)];
+        self.changes(&self.rootlist_changes(), ops, Some(revision))
+            .await
+    }
+
+    /// Lets anyone a playlist is shared with edit it, or stops that. For
+    /// tests that need a collaborative playlist.
+    #[doc(hidden)]
+    pub async fn set_collaborative(&self, playlist: Id, collaborative: bool) -> Result<()> {
+        let mut attributes = ListAttributes::new();
+        attributes.set_collaborative(collaborative);
+        let mut state = ListAttributesPartialState::new();
+        state.values = Some(attributes).into();
+        let mut update = UpdateListAttributes::new();
+        update.new_attributes = Some(state).into();
+        let mut op = Op::new();
+        op.set_kind(OpKind::UPDATE_LIST_ATTRIBUTES);
+        op.update_list_attributes = Some(update).into();
+        self.change(&playlist_changes(playlist), op).await
     }
 
     /// Removes raw rootlist entries by URI. For tests that need a folder.
@@ -105,9 +139,16 @@ impl Api {
     }
 
     async fn change(&self, endpoint: &str, op: Op) -> Result<()> {
+        self.changes(endpoint, vec![op], None).await
+    }
+
+    /// Applies operations together, after `revision` when they place
+    /// entries by index.
+    async fn changes(&self, endpoint: &str, ops: Vec<Op>, revision: Option<Vec<u8>>) -> Result<()> {
         let changes = ListChanges {
+            base_revision: revision,
             deltas: vec![Delta {
-                ops: vec![op],
+                ops,
                 ..Delta::default()
             }],
             ..ListChanges::default()

@@ -41,6 +41,10 @@ const TEST_PLAYLIST: &str = "Vivace live test";
 // Name fragments of the steps that start, pause or seek playback.
 const PLAYING_STEPS: [&str; 4] = ["playing", "paused", "lyrics", "stopped"];
 const WIDTH: u32 = 1280;
+// Where a podcast page's Follow button sits in the window.
+const FOLLOW_BUTTON: (f32, f32) = (671.0, 255.0);
+// The visible part of the settings page's device name field.
+const DEVICE_NAME_FIELD: (f32, f32) = (500.0, 670.0);
 const HEIGHT: u32 = 800;
 
 enum Event {
@@ -489,6 +493,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Changes a setting, which reconnects, and then signs out. Signing in
     // again needs the browser, so run this with a copy of the credentials.
+    // Clicks and types as a user would, on the folder, a podcast's Follow
+    // button and the device name. Net zero for the account: follows twice
+    // and puts the default device name back.
+    if std::env::var_os("LIVE_INTERACTIONS").is_some() {
+        let library_index = |ui: &MainWindow, name: &str| {
+            let items = ui.global::<Library>().get_items();
+            items
+                .iter()
+                .position(|item| item.title == name)
+                .map(|index| index as i32)
+        };
+        steps.truncate(1);
+        steps.push((
+            "i2-folder",
+            1500,
+            Box::new(move |ui| match library_index(ui, "Vivace test folder") {
+                Some(index) => ui.global::<Library>().invoke_open(index),
+                None => println!("no test folder: run cli folder-setup first"),
+            }),
+        ));
+        steps.push((
+            "i3-folder-up",
+            1000,
+            Box::new(|ui| ui.global::<Library>().invoke_close_folder()),
+        ));
+        steps.push((
+            "i4-show",
+            4000,
+            Box::new(
+                move |ui| match library_index(ui, "A followed podcast") {
+                    Some(index) => ui.global::<Library>().invoke_open(index),
+                    None => println!("the podcast is not in the library"),
+                },
+            ),
+        ));
+        for name in ["i5-follow-clicked", "i6-follow-clicked-again"] {
+            steps.push((
+                name,
+                2500,
+                Box::new(|ui| click(ui, FOLLOW_BUTTON.0, FOLLOW_BUTTON.1)),
+            ));
+        }
+        steps.push((
+            "i7-settings",
+            1000,
+            Box::new(|ui| ui.global::<Nav>().invoke_open_settings()),
+        ));
+        // Types a name into the field and presses Enter, which reconnects
+        // under that name; then empties it, back to the default.
+        steps.push((
+            "i8-named",
+            8000,
+            Box::new(|ui| {
+                click(ui, DEVICE_NAME_FIELD.0, DEVICE_NAME_FIELD.1);
+                shortcut(ui, slint::platform::Key::Control, "a".into());
+                type_text(ui, "Vivace typed");
+                type_text(ui, &slint::SharedString::from(slint::platform::Key::Return));
+            }),
+        ));
+        steps.push((
+            "i9-default-name",
+            8000,
+            Box::new(|ui| {
+                print_own_device(ui);
+                click(ui, DEVICE_NAME_FIELD.0, DEVICE_NAME_FIELD.1);
+                shortcut(ui, slint::platform::Key::Control, "a".into());
+                type_text(
+                    ui,
+                    &slint::SharedString::from(slint::platform::Key::Backspace),
+                );
+                type_text(ui, &slint::SharedString::from(slint::platform::Key::Return));
+            }),
+        ));
+        steps.push(("i10-checked", 500, Box::new(print_own_device)));
+    }
+
     if std::env::var_os("LIVE_SETTINGS").is_some() {
         steps.truncate(1);
         steps.push((
@@ -590,4 +670,42 @@ fn shortcut(ui: &MainWindow, modifier: slint::platform::Key, key: slint::SharedS
     window.dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
     window.dispatch_event(WindowEvent::KeyReleased { text: key });
     window.dispatch_event(WindowEvent::KeyReleased { text: modifier });
+}
+
+/// Clicks the left mouse button at a point of the window.
+fn click(ui: &MainWindow, x: f32, y: f32) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let position = slint::LogicalPosition::new(x, y);
+    let window = ui.window();
+    window.dispatch_event(WindowEvent::PointerMoved { position });
+    window.dispatch_event(WindowEvent::PointerPressed {
+        position,
+        button: PointerEventButton::Left,
+    });
+    window.dispatch_event(WindowEvent::PointerReleased {
+        position,
+        button: PointerEventButton::Left,
+    });
+}
+
+/// Types text, one key at a time.
+fn type_text(ui: &MainWindow, text: &str) {
+    use slint::platform::WindowEvent;
+    for character in text.chars() {
+        let key = slint::SharedString::from(character.to_string().as_str());
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: key.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text: key });
+    }
+}
+
+/// Prints what Spotify's device list calls this computer.
+fn print_own_device(ui: &MainWindow) {
+    let devices = ui.global::<vivace::Devices>().get_items();
+    let own = devices.iter().find(|device| device.local);
+    println!(
+        "this computer in the device list: {:?}",
+        own.map(|device| device.name.to_string())
+    );
 }
