@@ -61,3 +61,42 @@ pub(crate) async fn browser_login() -> crate::Result<Credentials> {
     let token = client.get_access_token_async().await?;
     Ok(Credentials::with_access_token(token.access_token))
 }
+
+const KEYRING_SERVICE: &str = "vivace";
+const KEYRING_ACCOUNT: &str = "spotify";
+const CREDENTIALS_FILE: &str = "credentials.json";
+
+/// The credentials saved by an earlier run: from the system keyring, or
+/// from librespot's file where there is no keyring.
+pub(crate) fn stored_credentials(cache: &Cache) -> Option<Credentials> {
+    keyring_entry()
+        .and_then(|entry| entry.get_password().ok())
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .or_else(|| cache.credentials())
+}
+
+/// Moves the credentials librespot just wrote to its file into the system
+/// keyring. Without a keyring the file stays, so signing in still sticks.
+pub(crate) fn protect_credentials() {
+    let Ok(path) = data_dir().map(|directory| directory.join(CREDENTIALS_FILE)) else {
+        return;
+    };
+    let Ok(json) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let stored = keyring_entry()
+        .ok_or_else(|| "no keyring".to_owned())
+        .and_then(|entry| entry.set_password(&json).map_err(|error| error.to_string()));
+    match stored {
+        Ok(()) => {
+            if let Err(error) = std::fs::remove_file(&path) {
+                log::warn!("couldn't remove {}: {error}", path.display());
+            }
+        }
+        Err(error) => log::info!("keeping credentials in a file: {error}"),
+    }
+}
+
+fn keyring_entry() -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).ok()
+}

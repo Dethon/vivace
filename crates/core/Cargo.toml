@@ -11,6 +11,7 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 http = "1"
 http-body-util = "0.1"
 iana-time-zone = "0.1"
+keyring = "4"
 librespot-protocol = { git = "https://github.com/librespot-org/librespot", rev = "4a005903e078d512456fb008aaa9ba6246881bd9" }
 log = "0.4"
 prost = { version = "0.14", default-features = false, features = ["derive", "std"] }

@@ -133,7 +133,12 @@ impl Engine {
         };
 
         let cache = auth::cache()?;
-        if let Some(credentials) = cache.credentials() {
+        let stored = {
+            let cache = cache.clone();
+            // Keyring backends block, some on their own event loop.
+            tokio::task::spawn_blocking(move || auth::stored_credentials(&cache)).await
+        };
+        if let Ok(Some(credentials)) = stored {
             match Self::start(
                 &config.device_name,
                 sink.clone(),
@@ -198,6 +203,8 @@ impl Engine {
         )
         .await?;
         let spirc = Arc::new(spirc);
+        // The session has just stored reusable credentials in its cache.
+        tokio::task::spawn_blocking(auth::protect_credentials);
 
         let (closed_tx, closed) = oneshot::channel();
         tokio::spawn(async move {
