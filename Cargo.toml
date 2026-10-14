@@ -18,3 +18,4 @@ strip = true
 # See vendor/README.md.
 [patch."https://github.com/librespot-org/librespot"]
 librespot-connect = { path = "vendor/librespot-connect" }
+librespot-audio = { path = "vendor/librespot-audio" }

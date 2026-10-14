@@ -3390,7 +3390,6 @@ dependencies = [
 [[package]]
 name = "librespot-audio"
 version = "0.8.0"
-source = "git+https://github.com/librespot-org/librespot?rev=4a005903e078d512456fb008aaa9ba6246881bd9#4a005903e078d512456fb008aaa9ba6246881bd9"
 dependencies = [
  "aes 0.8.4",
  "bytes",

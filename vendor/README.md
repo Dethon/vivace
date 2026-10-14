@@ -29,7 +29,19 @@ Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
    track. `add_autoplay_resolving_when_required` skips it, since Spotify
    offers no autoplay for a list it cannot name.
 
-To update: bump the `rev` of the librespot dependencies in
-`crates/core/Cargo.toml` and in `librespot-connect/Cargo.toml`, copy the new
-`connect/src` over `librespot-connect/src`, and reapply the changes above.
-Drop this directory once upstream emits the event itself.
+## librespot-audio
+
+A copy of `audio/` from the same commit, also wired in through `[patch]`.
+
+Local change, marked `vivace:` in `src/fetch/receive.rs`: audio is requested
+in pieces of at most 1 MB. Upstream sizes a request to one second of measured
+throughput and holds each response in memory before writing it to disk, which
+on a fast connection means a whole song, or tens of megabytes of a long
+podcast episode, sitting in RAM at once.
+
+## Updating
+
+Bump the `rev` of the librespot dependencies in `crates/core/Cargo.toml` and
+in both vendored `Cargo.toml` files, copy the new `connect/src` and
+`audio/src` over the vendored ones, and reapply the changes above. Drop a
+vendored crate once upstream no longer needs its changes.
