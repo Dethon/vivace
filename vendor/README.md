@@ -21,6 +21,14 @@ Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
    Upstream announces them only at activation and when toggled, so a load
    that sets them left listeners showing the modes from before it.
 
+4. The placeholder context `spotify:web-api`, which librespot gives an
+   ad-hoc track list, is never sent to Spotify for resolution: the request
+   failed with HTTP 400. `SpircTask::handle_transfer` treats it as "no
+   context" and takes the tracks from the transfer, where before the
+   transfer was left unfinished and playback stopped after the current
+   track. `add_autoplay_resolving_when_required` skips it, since Spotify
+   offers no autoplay for a list it cannot name.
+
 To update: bump the `rev` of the librespot dependencies in
 `crates/core/Cargo.toml` and in `librespot-connect/Cargo.toml`, copy the new
 `connect/src` over `librespot-connect/src`, and reapply the changes above.

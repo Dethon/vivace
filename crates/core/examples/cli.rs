@@ -300,71 +300,79 @@ async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<
     let mut device: Option<Box<str>> = None;
     loop {
         tokio::select! {
-            _ = &mut deadline => return Ok(()),
-            _ = steps.tick() => {
-                let Some(device) = &device else { continue };
-                step += 1;
-                match step {
-                    1 => {
-                        println!("-> pause the remote device");
-                        api.remote(device, RemoteCommand::Pause).await?;
+                    _ = &mut deadline => return Ok(()),
+                    _ = steps.tick() => {
+                        // The last step runs after the takeover, when nothing is remote any more.
+                        if device.is_none() && step != 6 {
+                            continue;
+                        }
+                        let device = device.as_deref().unwrap_or_default();
+                        step += 1;
+                        match step {
+                            1 => {
+                                println!("-> pause the remote device");
+                                api.remote(device, RemoteCommand::Pause).await?;
+                            }
+                            2 => {
+                                println!("-> resume the remote device");
+                                api.remote(device, RemoteCommand::Resume).await?;
+                            }
+                            3 => {
+                                println!("-> play an album there, from its third track");
+                                let play = RemotePlay::Context {
+                                    uri: "spotify:album:4m2880jivSbbyEGAKfITCa",
+                                    start: Start::Track(Id::from_base62("0oks4FnzhNp5QPTZtoet7c")?),
+                                };
+                                api.remote_play(device, play, false, Repeat::Off).await?;
+                            }
+                            4 => {
+                                println!("-> queue a track there");
+                                api.remote_queue(device, Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?).await?;
+                            }
+                            5 => {
+                                println!("-> play a list of two tracks there, from the first");
+                                let tracks = [
+                                    Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?,
+                                    Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?,
+                                ];
+        let play = RemotePlay::Tracks { tracks: &tracks, index: 0 };
+                                api.remote_play(device, play, false, Repeat::Off).await?;
+                            }
+                            6 => {
+                                println!("-> take over playback");
+                                engine.transfer_here()?;
+                            }
+                            7 => {
+                                println!("-> skip, to see that the queue came along");
+                                engine.next()?;
+                            }
+                            _ => {}
+                        }
                     }
-                    2 => {
-                        println!("-> resume the remote device");
-                        api.remote(device, RemoteCommand::Resume).await?;
-                    }
-                    3 => {
-                        println!("-> play an album there, from its third track");
-                        let play = RemotePlay::Context {
-                            uri: "spotify:album:4m2880jivSbbyEGAKfITCa",
-                            start: Start::Track(Id::from_base62("0oks4FnzhNp5QPTZtoet7c")?),
-                        };
-                        api.remote_play(device, play, false, Repeat::Off).await?;
-                    }
-                    4 => {
-                        println!("-> queue a track there");
-                        api.remote_queue(device, Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?).await?;
-                    }
-                    5 => {
-                        println!("-> play a list of two tracks there, from the second");
-                        let tracks = [
-                            Id::from_base62("69kOkLUCkxIZYexIgSG8rq")?,
-                            Id::from_base62("4uLU6hMCjMI75M1A2tKUQC")?,
-                        ];
-                        let play = RemotePlay::Tracks { tracks: &tracks, index: 1 };
-                        api.remote_play(device, play, false, Repeat::Off).await?;
-                    }
-                    6 => {
-                        println!("-> take over playback");
-                        engine.transfer_here()?;
-                    }
-                    _ => {}
+                    event = events.recv() => match event {
+                        Some(Event::Connect(connect)) => match connect.remote {
+                            Some(remote) => {
+                                println!(
+                                    "remote: playing={} position={} track={:?} context={} next={} queued={}",
+                                    remote.playing,
+                                    remote.position_ms,
+                                    remote.queue.current,
+                                    remote.queue.context_uri,
+                                    remote.queue.next.len(),
+                                    remote.queue.next.iter().filter(|item| item.queued).count(),
+                                );
+                                device = Some(remote.device);
+                            }
+                            None => {
+                                println!("connect: nothing plays elsewhere");
+                                device = None;
+                            }
+                        },
+                        Some(Event::Position(_) | Event::Queue(_)) => {}
+                        Some(event) => println!("{event:?}"),
+                        None => return Ok(()),
+                    },
                 }
-            }
-            event = events.recv() => match event {
-                Some(Event::Connect(connect)) => match connect.remote {
-                    Some(remote) => {
-                        println!(
-                            "remote: playing={} position={} track={:?} context={} next={} queued={}",
-                            remote.playing,
-                            remote.position_ms,
-                            remote.queue.current,
-                            remote.queue.context_uri,
-                            remote.queue.next.len(),
-                            remote.queue.next.iter().filter(|item| item.queued).count(),
-                        );
-                        device = Some(remote.device);
-                    }
-                    None => {
-                        println!("connect: nothing plays elsewhere");
-                        device = None;
-                    }
-                },
-                Some(Event::Position(_) | Event::Queue(_)) => {}
-                Some(event) => println!("{event:?}"),
-                None => return Ok(()),
-            },
-        }
     }
 }
 
