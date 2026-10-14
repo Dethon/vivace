@@ -224,6 +224,8 @@ pub struct Playlist {
     pub description: Box<str>,
     pub length: u32,
     pub image: Option<Image>,
+    /// Anyone it is shared with can add and remove tracks.
+    pub collaborative: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

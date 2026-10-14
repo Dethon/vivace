@@ -236,6 +236,7 @@ impl Api {
                 description: content.attributes.description().into(),
                 length: content.length().try_into().unwrap_or_default(),
                 image: playlist_image(&content.attributes),
+                collaborative: content.attributes.collaborative(),
             },
             entries,
         })

@@ -252,6 +252,8 @@ pub(super) fn playlist(data: PlaylistData) -> Option<Playlist> {
         description: data.description.into(),
         length: 0,
         image: data.images.items.first().and_then(Sources::image),
+        // Search and Home results do not say.
+        collaborative: false,
     })
 }
 

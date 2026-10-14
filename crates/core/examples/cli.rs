@@ -71,8 +71,17 @@ async fn run() -> Fallible<()> {
             println!("{} playlists:", playlists.len());
             for playlist in &playlists {
                 println!(
-                    "  {} | {} | {} tracks | by {} | image {:?}",
-                    playlist.id, playlist.name, playlist.length, playlist.owner, playlist.image
+                    "  {} | {} | {} tracks | by {}{} | image {:?}",
+                    playlist.id,
+                    playlist.name,
+                    playlist.length,
+                    playlist.owner,
+                    if playlist.collaborative {
+                        " | collaborative"
+                    } else {
+                        ""
+                    },
+                    playlist.image
                 );
             }
             println!(

@@ -120,11 +120,11 @@ impl State {
         &self.history[self.position].page
     }
 
-    /// The playlists the user owns, which are the ones they can add to.
+    /// The playlists the user can add to: their own and collaborative ones.
     fn editable(&self) -> impl Iterator<Item = &Playlist> {
         self.playlists
             .iter()
-            .filter(|playlist| *playlist.owner == *self.username)
+            .filter(|playlist| playlist.collaborative || *playlist.owner == *self.username)
     }
 
     /// The track shown in a row of the page, if that row is a track.

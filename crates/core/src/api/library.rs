@@ -103,6 +103,7 @@ impl Api {
                         .picture_size
                         .first()
                         .map(|size| Image::from_url(size.url())),
+                    collaborative: meta.attributes.collaborative(),
                 })
             }));
 
