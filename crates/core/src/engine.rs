@@ -875,6 +875,13 @@ impl Events {
     }
 
     fn connect(&self, cluster: &Cluster) -> Event {
+        log::debug!(
+            "cluster changed at {} on server {}: active <{}>, playing {}",
+            cluster.changed_timestamp_ms,
+            cluster.server_timestamp_ms,
+            cluster.active_device_id,
+            cluster.player_state.is_playing && !cluster.player_state.is_paused,
+        );
         Event::Connect(Connect::from_cluster(cluster, &self.device_id))
     }
 }

@@ -81,6 +81,12 @@ Local changes, marked `vivace:` in `src/spirc.rs`, `src/state.rs` and
     Spotify servers, and when handing over to speakers such as Music
     Assistant.
 
+12. `SpircTask::notify` hands the cluster in the answer to its state to the
+    `cluster_listener` only while the device is active. The answer to the
+    last state of a device that has just lost playback could predate the
+    takeover, and Vivace then showed nothing playing anywhere while a speaker
+    played; the dealer pushes the cluster to an inactive device.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.

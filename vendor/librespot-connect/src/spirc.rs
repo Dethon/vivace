@@ -2019,7 +2019,13 @@ impl SpircTask {
         self.connect_state.set_now(self.now_ms() as u64);
 
         let response = self.connect_state.send_state(&self.session).await?;
-        if let Ok(cluster) = <Cluster as protobuf::Message>::parse_from_bytes(&response) {
+        // vivace: only while this device plays. The state a device sends as
+        // it leaves gets an answer that can predate the takeover, when it
+        // reaches another of Spotify's sites, and listeners showed nothing
+        // playing anywhere; the dealer brings the cluster then.
+        if self.connect_state.is_active()
+            && let Ok(cluster) = <Cluster as protobuf::Message>::parse_from_bytes(&response)
+        {
             self.forward_cluster(cluster);
         }
         Ok(())
