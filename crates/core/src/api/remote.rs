@@ -299,6 +299,8 @@ impl Api {
                 Err(Error::Status(410)) if Instant::now() < woken_by => {
                     tokio::time::sleep(WAKE_RETRY).await;
                 }
+                // Spotify's answer when the device never takes it.
+                Err(Error::Status(410)) => return Err(Error::NoResponse),
                 result => return result.map(drop),
             }
         }

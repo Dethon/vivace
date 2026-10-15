@@ -52,6 +52,10 @@ pub enum Error {
     /// A private query Spotify no longer recognises; the feature needs an update.
     #[error("Spotify changed this feature's interface")]
     QueryChanged,
+    /// Another device never took what was sent to it, such as a speaker
+    /// too long asleep.
+    #[error("the device didn't respond")]
+    NoResponse,
     #[error("Spotify answered with HTTP {0}")]
     Status(u16),
     #[error("network error: {0}")]
