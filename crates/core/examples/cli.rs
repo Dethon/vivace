@@ -1027,7 +1027,10 @@ async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {
         println!("FAIL: nothing to carry over");
         return Ok(());
     };
-    println!("-> at {before} ms ({left_off:?}); changing the volume level");
+    println!(
+        "-> at {before} ms, playing {}; changing the volume level",
+        left_off.playing
+    );
     drop((engine, events));
 
     config.volume_level = VolumeLevel::Loud;
