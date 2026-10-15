@@ -850,10 +850,11 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
     {
         return Err("the session didn't end".into());
     }
-    // As the app does, the next session picks up where this one left off.
+    // As the app does, the next session picks up where this one left off,
+    // playing if this one was playing until the end.
     config.resume = Some(Resume {
         session_id: engine.session_id(),
-        play: true,
+        play: engine.playing_at().is_some(),
     });
     drop((engine, events));
     tokio::time::sleep(Duration::from_secs(5)).await;
