@@ -18,7 +18,7 @@ const MAX_CONCURRENT: usize = 4;
 const ATTEMPTS: usize = 2;
 const PATHFINDER: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
 const JSON: &str = "application/json";
-// How much of an undecodable response is logged for diagnosis.
+// How much of a failed or undecodable response is logged for diagnosis.
 const RESPONSE_LOG_BYTES: usize = 400;
 
 /// A persisted GraphQL query of Spotify's web player, addressed by its hash.
@@ -111,8 +111,7 @@ impl Transport {
         match serde_json::from_slice::<Envelope<T>>(&response) {
             Ok(envelope) => Ok(envelope.data),
             Err(error) => {
-                let shown = &response[..response.len().min(RESPONSE_LOG_BYTES)];
-                log::debug!("{} answered {}", query.name, String::from_utf8_lossy(shown));
+                log::debug!("{} answered {}", query.name, shown(&response));
                 Err(decode(error))
             }
         }
@@ -178,31 +177,17 @@ impl Transport {
                         let body = response.into_body().collect().await.map_err(network)?;
                         return Ok(body.to_bytes());
                     }
-                    let headers = response.headers().clone();
-                    let body = match response.into_body().collect().await {
-                        Ok(body) => body.to_bytes(),
-                        Err(_) => Bytes::new(),
-                    };
-                    let shown = &body[..body.len().min(RESPONSE_LOG_BYTES)];
-                    // Missing lyrics, covers and the like answer 404 all the time.
-                    let level = if status == StatusCode::NOT_FOUND {
-                        log::Level::Debug
-                    } else {
-                        log::Level::Warn
-                    };
-                    log::log!(
-                        level,
-                        "{method} {} answered {status}: {}",
-                        url.split('?').next().unwrap_or(url),
-                        String::from_utf8_lossy(shown)
-                    );
-                    return Err(match status {
+                    let error = match status {
                         StatusCode::TOO_MANY_REQUESTS => Error::RateLimited {
-                            retry_after: HttpClient::get_retry_after(&headers),
+                            retry_after: HttpClient::get_retry_after(response.headers()),
                         },
                         StatusCode::NOT_FOUND => Error::NotFound,
                         status => Error::Status(status.as_u16()),
-                    });
+                    };
+                    let body = response.into_body().collect().await;
+                    let body = body.map(|body| body.to_bytes()).unwrap_or_default();
+                    log_failure(method, url, status, &body);
+                    return Err(error);
                 }
                 // Connection-level failures are usually a stale pooled socket.
                 Err(_) if attempt < ATTEMPTS => {
@@ -213,6 +198,23 @@ impl Transport {
             }
         }
     }
+}
+
+/// Logs what Spotify answered to a request that failed.
+fn log_failure(method: &Method, url: &str, status: StatusCode, body: &[u8]) {
+    // Missing lyrics, covers and the like answer 404 all the time.
+    let level = if status == StatusCode::NOT_FOUND {
+        log::Level::Debug
+    } else {
+        log::Level::Warn
+    };
+    let path = url.split('?').next().unwrap_or(url);
+    log::log!(level, "{method} {path} answered {status}: {}", shown(body));
+}
+
+/// The start of a response, for the log.
+fn shown(body: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(&body[..body.len().min(RESPONSE_LOG_BYTES)])
 }
 
 fn header(value: &str) -> Result<HeaderValue> {
