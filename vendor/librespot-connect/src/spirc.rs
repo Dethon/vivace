@@ -1127,9 +1127,13 @@ impl SpircTask {
                 return Ok(());
             }
             // modification and update of the connect_state
+            // vivace: the state goes out after the reply, as for the other
+            // requests. Spotify gives up on a transfer it has no reply to
+            // within about three seconds, closes the connection and fails it,
+            // and sending the state first took longer than that on a slow
+            // connection.
             Transfer(transfer) => {
-                self.handle_transfer(transfer.data.expect("by condition checked"))?;
-                return self.notify().await;
+                self.handle_transfer(transfer.data.expect("by condition checked"))?
             }
             Play(mut play) => {
                 if !self.connect_state.is_active() {

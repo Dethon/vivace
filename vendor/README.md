@@ -66,6 +66,12 @@ Local changes, marked `vivace:` in `src/spirc.rs`, `src/state.rs` and
    after about three seconds, closed the device's connection ("Remote sent
    after having closed"), and the switch failed or limped through late.
 
+10. `SpircTask::handle_request` replies to a transfer before sending the new
+    state, as it does for every other request. Spotify fails a transfer it
+    has no reply to within about three seconds and closes the connection;
+    on a slow connection sending the state first took longer, so switching
+    to that computer did nothing, and the sender was told 410 or 502.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.
