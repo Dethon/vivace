@@ -1,5 +1,7 @@
 //! Controlling playback on other Connect devices.
 
+use std::time::{Duration, Instant};
+
 use bytes::Bytes;
 use http::Method;
 use librespot_protocol::connect::SetVolumeCommand;
@@ -7,10 +9,14 @@ use protobuf::Message;
 use serde::Serialize;
 
 use super::{Api, transport::decode};
-use crate::{Repeat, Result, Start, engine::QUEUE_PROVIDER, model::ItemRef};
+use crate::{Error, Repeat, Result, Start, engine::QUEUE_PROVIDER, model::ItemRef};
 
 const JSON: &str = "application/json";
 const PROTOBUF: &str = "application/x-protobuf";
+// How long a sleeping speaker is given to wake for a transfer, and how often
+// it is asked again meanwhile.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(20);
+const WAKE_RETRY: Duration = Duration::from_secs(1);
 
 /// A transport command for the device that is currently playing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -278,10 +284,22 @@ impl Api {
             "/connect-state/v1/connect/transfer/from/{}/to/{device}",
             self.device_id()
         );
-        self.0
-            .spclient(Method::POST, &endpoint, None, Bytes::new())
-            .await?;
-        Ok(())
+        let woken_by = Instant::now() + WAKE_TIMEOUT;
+        loop {
+            match self
+                .0
+                .spclient(Method::POST, &endpoint, None, Bytes::new())
+                .await
+            {
+                // A sleeping speaker, such as an Echo Spotify lists as
+                // offline, refuses the transfer with 410 but starts waking
+                // up, and takes it once awake.
+                Err(Error::Status(410)) if Instant::now() < woken_by => {
+                    tokio::time::sleep(WAKE_RETRY).await;
+                }
+                result => return result.map(drop),
+            }
+        }
     }
 
     fn device_id(&self) -> &str {

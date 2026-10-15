@@ -8,6 +8,7 @@
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
+//!   cli speaker-test <device id> [idle|play]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
 //!   cli idle-test [transfer]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play) starts it again where it was
@@ -15,6 +16,8 @@
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
+//!
+//! `CLI_NAME` names the cli's device, to tell two copies apart.
 //!
 //! Put `silent` first to discard audio instead of playing it: `cli silent play <uri>`.
 
@@ -57,7 +60,7 @@ async fn run() -> Fallible<()> {
     let mut args: Vec<&str> = args.iter().map(String::as_str).collect();
     // A device of its own, so it can run next to the app and other copies.
     let mut config = Config {
-        device_name: "Vivace cli".into(),
+        device_name: std::env::var("CLI_NAME").unwrap_or_else(|_| "Vivace cli".into()),
         persistent_device: false,
         ..Config::default()
     };
@@ -73,6 +76,9 @@ async fn run() -> Fallible<()> {
     }
     if args.first() == Some(&"idle-test") {
         return idle_test(config, args.get(1) == Some(&"transfer")).await;
+    }
+    if let ["speaker-test", device, rest @ ..] = args.as_slice() {
+        return speaker_test(config, device, rest.first().copied()).await;
     }
     if args.first() == Some(&"drop-test") {
         return drop_test(config, args.get(1).copied()).await;
@@ -834,6 +840,88 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
         None => println!("FAIL: playback didn't carry on after the reconnect"),
     }
     Ok(())
+}
+
+/// Takes the account's playback, moves it to `device` the way the device
+/// picker does and prints what Spotify answers, then gives it back.
+async fn speaker_test(config: Config, device: &str, mode: Option<&str>) -> Fallible<()> {
+    let (engine, mut events) = Engine::connect(config).await?;
+    let api = engine.api();
+    let mut connect = None;
+    watch_connect(&mut events, &mut connect, 3).await;
+    let original = connect
+        .as_ref()
+        .and_then(|state| state.remote.as_ref())
+        .map(|remote| remote.device.clone());
+    println!("-> state was on {original:?}");
+    if mode != Some("idle") {
+        println!("-> taking playback here");
+        engine.transfer_here()?;
+        watch_connect(&mut events, &mut connect, 5).await;
+    }
+    if mode == Some("play") {
+        engine.play()?;
+        watch_connect(&mut events, &mut connect, 5).await;
+    }
+    let started = Instant::now();
+    println!("-> transfer to {device}");
+    let result = api.transfer(device).await;
+    println!("transfer answered {result:?} in {:?}", started.elapsed());
+    watch_connect(&mut events, &mut connect, 15).await;
+    let on_target = connect
+        .as_ref()
+        .and_then(|state| state.remote.as_ref())
+        .filter(|remote| *remote.device == *device)
+        .map(|remote| remote.playing);
+    if on_target == Some(true) {
+        println!("-> pausing {device}");
+        api.remote(device, RemoteCommand::Pause).await?;
+        watch_connect(&mut events, &mut connect, 3).await;
+    }
+    if let Some(original) = original {
+        println!("-> giving playback back to {original}");
+        if on_target.is_some() {
+            api.remote(device, RemoteCommand::Pause).await.ok();
+        }
+        engine.transfer_here().ok();
+        watch_connect(&mut events, &mut connect, 4).await;
+        engine.pause().ok();
+        println!("give back: {:?}", api.transfer(&original).await);
+        watch_connect(&mut events, &mut connect, 5).await;
+        if connect
+            .as_ref()
+            .and_then(|state| state.remote.as_ref())
+            .is_some_and(|remote| remote.playing)
+        {
+            api.remote(&original, RemoteCommand::Pause).await?;
+            watch_connect(&mut events, &mut connect, 2).await;
+        }
+    }
+    Ok(())
+}
+
+async fn watch_connect(
+    events: &mut Events,
+    connect: &mut Option<vivace_core::Connect>,
+    seconds: u64,
+) {
+    let deadline = tokio::time::sleep(Duration::from_secs(seconds));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return,
+            event = events.recv() => match event {
+                Some(Event::Connect(state)) => {
+                    let active = state.devices.iter().find(|device| device.is_active).map(|device| device.name.clone());
+                    println!("connect: active {active:?}, remote playing {:?}", state.remote.as_ref().map(|remote| remote.playing));
+                    *connect = Some(state);
+                }
+                Some(event @ (Event::Playback(_) | Event::Stopped)) => println!("{event:?}"),
+                Some(_) => {}
+                None => return,
+            },
+        }
+    }
 }
 
 async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {

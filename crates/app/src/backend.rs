@@ -641,10 +641,14 @@ impl Session {
                     self.engine.transfer_here()
                 } else {
                     self.spawn(move |api, _| async move {
-                        let result = api.transfer(&device).await;
-                        result
-                            .err()
-                            .map(|error| Update::Notice(format!("Couldn't switch device: {error}")))
+                        let error = api.transfer(&device).await.err()?;
+                        Some(Update::Notice(match error {
+                            // Spotify's answer when the device never takes it.
+                            vivace_core::Error::Status(410) => {
+                                "Couldn't switch device: it didn't respond".into()
+                            }
+                            error => format!("Couldn't switch device: {error}"),
+                        }))
                     });
                     Ok(())
                 }
