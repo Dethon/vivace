@@ -72,6 +72,15 @@ Local changes, marked `vivace:` in `src/spirc.rs`, `src/state.rs` and
     on a slow connection sending the state first took longer, so switching
     to that computer did nothing, and the sender was told 410 or 502.
 
+11. `SpircTask::handle_cluster_update` marks the device inactive before
+    sending its last state when another device has taken playback. Upstream
+    sent that state as active, and Spotify sometimes took it as current: the
+    device that had just taken playback stopped, and then this one went
+    inactive too, leaving nothing playing. It happened every time between two
+    computers whose clocks were a second apart and that reached different
+    Spotify servers, and when handing over to speakers such as Music
+    Assistant.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.

@@ -1061,6 +1061,11 @@ impl SpircTask {
                 && cluster.active_device_id != self.session.device_id();
             if became_inactive {
                 info!("device became inactive");
+                // vivace: the last state goes out inactive. Sent active, it
+                // made Spotify take playback back from the device that had
+                // just taken it whenever this one's clock ran ahead of that
+                // one's, and that device stopped, leaving nothing playing.
+                self.connect_state.set_active(false);
                 self.handle_disconnect().await?;
                 self.handle_stop();
             } else if self.connect_state.is_active() {
