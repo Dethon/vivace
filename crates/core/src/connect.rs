@@ -65,7 +65,9 @@ impl Connect {
             .device
             .iter()
             // Controllers such as the web player are listed but cannot play.
-            .filter(|(_, info)| info.can_play)
+            // Echo speakers are now and then named after their bare id, as
+            // in `<id>_amzn_1`, instead of their room.
+            .filter(|(id, info)| info.can_play && !id.starts_with(info.name.as_str()))
             .map(|(id, info)| Device {
                 id: id.as_str().into(),
                 name: info.name.as_str().into(),
@@ -169,6 +171,14 @@ mod tests {
         cluster.device.insert(
             "web".into(),
             device("Web Player", DeviceType::COMPUTER, false),
+        );
+        cluster.device.insert(
+            "12d92567-d460-443f-bdfc-43c774cda8b6_amzn_1".into(),
+            device(
+                "12d92567-d460-443f-bdfc-43c774cda8b6",
+                DeviceType::SPEAKER,
+                true,
+            ),
         );
         cluster
     }
