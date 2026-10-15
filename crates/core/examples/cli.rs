@@ -35,8 +35,8 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, Playback, RemoteCommand, RemotePlay, Repeat, Resume, Start,
-    VolumeLevel,
+    Config, Connect, Engine, Event, Events, Playback, Remote, RemoteCommand, RemotePlay, Repeat,
+    Resume, Start, VolumeLevel,
     model::{Id, ItemRef, Kind, Progress, Track},
 };
 
@@ -827,7 +827,6 @@ async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<
     }
 }
 
-/// Prints events for `seconds`, optionally skipping to the next track once.
 /// Plays Liked Songs, or an episode as a list of one as search results do,
 /// drops the connection as Spotify's server does now and
 /// then, and reconnects with the same device as the app does. Playback must
@@ -840,22 +839,9 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
         Some(id) => {
             engine.play_tracks(&[ItemRef::episode(Id::from_base62(id)?)], 0, Repeat::Off)?
         }
-        None => engine.play_context(
-            &engine.liked_songs_uri(),
-            Start::Beginning,
-            false,
-            Repeat::Off,
-        )?,
+        None => play_liked(&engine)?,
     }
-    let Some(Event::Position(before)) = wait_for(
-        &mut events,
-        30,
-        |event| matches!(event, Event::Position(position_ms) if *position_ms > 8000),
-    )
-    .await
-    else {
-        return Err("the track didn't start".into());
-    };
+    let before = playing_past(&mut events, 8000).await?;
     println!("-> playing at {before} ms; dropping the connection");
     engine.drop_connection();
     if wait_for(&mut events, 20, |event| *event == Event::Disconnected)
@@ -891,10 +877,7 @@ async fn speaker_test(config: Config, device: &str, mode: Option<&str>) -> Falli
     let api = engine.api();
     let mut connect = None;
     watch_connect(&mut events, &mut connect, 3).await;
-    let original = connect
-        .as_ref()
-        .and_then(|state| state.remote.as_ref())
-        .map(|remote| remote.device.clone());
+    let original = remote_playback(&connect).map(|remote| remote.device.clone());
     println!("-> state was on {original:?}");
     let paused_context = mode.and_then(|mode| mode.strip_prefix("paused-context="));
     if let Some(uri) = paused_context.or(mode.and_then(|mode| mode.strip_prefix("context="))) {
@@ -923,9 +906,7 @@ async fn speaker_test(config: Config, device: &str, mode: Option<&str>) -> Falli
     let result = api.transfer(device).await;
     println!("transfer answered {result:?} in {:?}", started.elapsed());
     watch_connect(&mut events, &mut connect, 30).await;
-    let on_target = connect
-        .as_ref()
-        .and_then(|state| state.remote.as_ref())
+    let on_target = remote_playback(&connect)
         .filter(|remote| *remote.device == *device)
         .map(|remote| remote.playing);
     if on_target == Some(true) {
@@ -943,11 +924,7 @@ async fn speaker_test(config: Config, device: &str, mode: Option<&str>) -> Falli
         engine.pause().ok();
         println!("give back: {:?}", api.transfer(&original).await);
         watch_connect(&mut events, &mut connect, 5).await;
-        if connect
-            .as_ref()
-            .and_then(|state| state.remote.as_ref())
-            .is_some_and(|remote| remote.playing)
-        {
+        if remote_playback(&connect).is_some_and(|remote| remote.playing) {
             api.remote(&original, RemoteCommand::Pause).await?;
             watch_connect(&mut events, &mut connect, 2).await;
         }
@@ -955,11 +932,14 @@ async fn speaker_test(config: Config, device: &str, mode: Option<&str>) -> Falli
     Ok(())
 }
 
-async fn watch_connect(
-    events: &mut Events,
-    connect: &mut Option<vivace_core::Connect>,
-    seconds: u64,
-) {
+/// Playback on another device, as the account's state last said.
+fn remote_playback(connect: &Option<Connect>) -> Option<&Remote> {
+    connect.as_ref()?.remote.as_ref()
+}
+
+/// Prints how the account's playback changes for `seconds`, keeping the
+/// latest state in `connect`.
+async fn watch_connect(events: &mut Events, connect: &mut Option<Connect>, seconds: u64) {
     let deadline = tokio::time::sleep(Duration::from_secs(seconds));
     tokio::pin!(deadline);
     loop {
@@ -967,8 +947,12 @@ async fn watch_connect(
             _ = &mut deadline => return,
             event = events.recv() => match event {
                 Some(Event::Connect(state)) => {
-                    let active = state.devices.iter().find(|device| device.is_active).map(|device| device.name.clone());
-                    println!("connect: active {active:?}, remote playing {:?}", state.remote.as_ref().map(|remote| remote.playing));
+                    let active = state.devices.iter().find(|device| device.is_active);
+                    println!(
+                        "connect: active {:?}, remote playing {:?}",
+                        active.map(|device| &device.name),
+                        state.remote.as_ref().map(|remote| remote.playing),
+                    );
                     *connect = Some(state);
                 }
                 Some(event @ (Event::Playback(_) | Event::Stopped)) => println!("{event:?}"),
@@ -981,38 +965,10 @@ async fn watch_connect(
 
 async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
     let (engine, mut events) = Engine::connect(config).await?;
-    engine.play_context(
-        &engine.liked_songs_uri(),
-        Start::Beginning,
-        false,
-        Repeat::Off,
-    )?;
-    let Some(Event::Item(item)) =
-        wait_for(&mut events, 30, |event| matches!(event, Event::Item(_))).await
-    else {
-        return Err("nothing started".into());
-    };
-    if wait_for(
-        &mut events,
-        30,
-        |event| matches!(event, Event::Position(position_ms) if *position_ms > 8000),
-    )
-    .await
-    .is_none()
-    {
-        return Err("the track didn't start".into());
-    }
-    engine.pause()?;
-    let Some(Event::Playback(Playback {
-        position_ms: paused_at,
-        ..
-    })) = wait_for(&mut events, 10, |event| {
-        matches!(event, Event::Playback(Playback { playing: false, .. }))
-    })
-    .await
-    else {
-        return Err("the track didn't pause".into());
-    };
+    play_liked(&engine)?;
+    let item = started(&mut events).await?;
+    playing_past(&mut events, 8000).await?;
+    let paused_at = pause(&engine, &mut events).await?;
     println!("-> paused {item:?} at {paused_at} ms; losing playback");
     engine.lose_playback()?;
     wait_for(&mut events, 3, |_| false).await;
@@ -1026,7 +982,7 @@ async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
         .await;
         match taken {
             Some(Event::Playback(Playback { position_ms, .. }))
-                if position_ms + 1500 >= paused_at && position_ms <= paused_at + 1500 => {}
+                if near(position_ms, paused_at, 1500) => {}
             other => {
                 println!("FAIL: choosing this computer didn't take it back paused ({other:?})");
                 return Ok(());
@@ -1043,7 +999,7 @@ async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
     engine.pause()?;
     match resumed {
         Some(Event::Playback(Playback { position_ms, .. }))
-            if position_ms + 1500 >= paused_at && position_ms <= paused_at + 3000 && same_item =>
+            if near(position_ms, paused_at, 3000) && same_item =>
         {
             println!("PASS: {item:?} started again at {position_ms} ms")
         }
@@ -1060,37 +1016,11 @@ async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {
     config.persistent_device = true;
     config.normalise = true;
     let (engine, mut events) = Engine::connect(config.clone()).await?;
-    engine.play_context(
-        &engine.liked_songs_uri(),
-        Start::Beginning,
-        false,
-        Repeat::Off,
-    )?;
-    let Some(Event::Item(item)) =
-        wait_for(&mut events, 30, |event| matches!(event, Event::Item(_))).await
-    else {
-        return Err("nothing started".into());
-    };
-    let Some(Event::Position(mut before)) = wait_for(
-        &mut events,
-        30,
-        |event| matches!(event, Event::Position(position_ms) if *position_ms > 8000),
-    )
-    .await
-    else {
-        return Err("the track didn't start".into());
-    };
+    play_liked(&engine)?;
+    let item = started(&mut events).await?;
+    let mut before = playing_past(&mut events, 8000).await?;
     if paused {
-        engine.pause()?;
-        let Some(Event::Playback(Playback { position_ms, .. })) =
-            wait_for(&mut events, 10, |event| {
-                matches!(event, Event::Playback(Playback { playing: false, .. }))
-            })
-            .await
-        else {
-            return Err("the track didn't pause".into());
-        };
-        before = position_ms;
+        before = pause(&engine, &mut events).await?;
     }
     let Some(left_off) = engine.left_off() else {
         println!("FAIL: nothing to carry over");
@@ -1111,7 +1041,7 @@ async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {
         println!("FAIL: nothing carried on");
         return Ok(());
     };
-    let near = position_ms + 1500 >= before && position_ms <= before + 2500;
+    let near = near(position_ms, before, 2500);
     let went_on = wait_for(&mut events, 8, |event| {
         matches!(event, Event::Position(at) if *at > position_ms + 4000)
             || matches!(event, Event::Stopped | Event::Playback(_))
@@ -1128,6 +1058,48 @@ async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {
         println!("PASS: {item:?} carried on at {position_ms} ms, playing {playing}");
     }
     Ok(())
+}
+
+fn play_liked(engine: &Engine) -> vivace_core::Result<()> {
+    engine.play_context(
+        &engine.liked_songs_uri(),
+        Start::Beginning,
+        false,
+        Repeat::Off,
+    )
+}
+
+/// Waits for the player to announce what it plays.
+async fn started(events: &mut Events) -> Fallible<ItemRef> {
+    match wait_for(events, 30, |event| matches!(event, Event::Item(_))).await {
+        Some(Event::Item(item)) => Ok(item),
+        _ => Err("nothing started".into()),
+    }
+}
+
+/// Waits for playback to get past `position_ms`, and says where it got.
+async fn playing_past(events: &mut Events, position_ms: u32) -> Fallible<u32> {
+    let past = |event: &Event| matches!(event, Event::Position(at) if *at > position_ms);
+    match wait_for(events, 30, past).await {
+        Some(Event::Position(at)) => Ok(at),
+        _ => Err("the track didn't start".into()),
+    }
+}
+
+/// Pauses, and says where playback stopped.
+async fn pause(engine: &Engine, events: &mut Events) -> Fallible<u32> {
+    engine.pause()?;
+    let paused = |event: &Event| matches!(event, Event::Playback(Playback { playing: false, .. }));
+    match wait_for(events, 10, paused).await {
+        Some(Event::Playback(Playback { position_ms, .. })) => Ok(position_ms),
+        _ => Err("the track didn't pause".into()),
+    }
+}
+
+/// Whether `position_ms` is where playback stopped, at `stopped_at`: up to
+/// a second and a half before it, or up to `late_ms` after.
+fn near(position_ms: u32, stopped_at: u32, late_ms: u32) -> bool {
+    position_ms + 1500 >= stopped_at && position_ms <= stopped_at + late_ms
 }
 
 /// Whether the player is still on `item` a couple of seconds on.
@@ -1166,6 +1138,7 @@ async fn wait_for(
     }
 }
 
+/// Prints events for `seconds`, optionally skipping to the next track once.
 async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -> Fallible<()> {
     let deadline = tokio::time::sleep(Duration::from_secs(seconds));
     tokio::pin!(deadline);
