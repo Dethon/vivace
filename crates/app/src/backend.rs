@@ -412,7 +412,7 @@ impl Session {
                     result = api.remote(&device, remote).await;
                 }
             }
-            result.err().map(|error| Update::Notice(error.to_string()))
+            failure_notice(result)
         });
     }
 
@@ -596,7 +596,7 @@ impl Session {
                     self.spawn(move |api, _| async move {
                         let play = RemotePlay::Context { uri: &uri, start };
                         let result = api.remote_play(&device, play, shuffle, repeat).await;
-                        result.err().map(|error| Update::Notice(error.to_string()))
+                        failure_notice(result)
                     });
                     Ok(())
                 }
@@ -614,7 +614,7 @@ impl Session {
                             index,
                         };
                         let result = api.remote_play(&device, play, false, repeat).await;
-                        result.err().map(|error| Update::Notice(error.to_string()))
+                        failure_notice(result)
                     });
                     Ok(())
                 }
@@ -641,7 +641,7 @@ impl Session {
                             Ok(()) => api.remote(&device, track).await,
                             failed => failed,
                         };
-                        result.err().map(|error| Update::Notice(error.to_string()))
+                        failure_notice(result)
                     });
                     Ok(())
                 }
@@ -651,7 +651,7 @@ impl Session {
                 match self.remote.playing.clone() {
                     Some(device) => self.spawn(move |api, _| async move {
                         let result = api.remote_volume(&device, volume).await;
-                        result.err().map(|error| Update::Notice(error.to_string()))
+                        failure_notice(result)
                     }),
                     None => self.engine.set_volume(volume),
                 }
@@ -812,6 +812,11 @@ impl RemoteControl {
         }
         None
     }
+}
+
+/// Tells the user why a command failed, if it did.
+fn failure_notice(result: vivace_core::Result<()>) -> Option<Update> {
+    result.err().map(|error| Update::Notice(error.to_string()))
 }
 
 async fn resolve_queue(api: &Api, queue: Queue, sequence: u64) -> Option<Update> {
