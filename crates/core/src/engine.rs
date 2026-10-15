@@ -642,6 +642,12 @@ impl Engine {
     }
 
     pub fn seek(&self, position_ms: u32) -> Result<()> {
+        // Where play starts again, if Spotify took playback away.
+        let mut last = LastPlayed::shared(&self.last);
+        if !last.active {
+            last.position_ms = position_ms;
+        }
+        drop(last);
         Ok(self.spirc.set_position_ms(position_ms)?)
     }
 
