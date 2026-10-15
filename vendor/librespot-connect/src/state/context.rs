@@ -16,7 +16,7 @@ use crate::{
 };
 use protobuf::MessageField;
 use std::collections::HashMap;
-use uuid::Uuid;
+use sha1::{Digest, Sha1};
 
 const LOCAL_FILES_IDENTIFIER: &str = "spotify:local-files";
 const SEARCH_IDENTIFIER: &str = "spotify:search";
@@ -470,7 +470,11 @@ impl ConnectState {
         let uid = match ctx_track.uid.as_ref() {
             Some(uid) if !uid.is_empty() => uid.to_string(),
             // so providing a unique id should allow to resort the queue
-            _ => Uuid::new_v4().as_simple().to_string(),
+            // vivace: the one Spotify's own clients give it, so that a
+            // transfer names a track they can find. Upstream made one up at
+            // random, and Spotify's players, such as Soloist, started a track
+            // they could not find from the beginning.
+            _ => uid_for(&uri),
         };
 
         let mut metadata = page_metadata.cloned().unwrap_or_default();
@@ -516,5 +520,25 @@ impl ConnectState {
         }
 
         Ok(())
+    }
+}
+
+/// vivace: the uid Spotify's clients give a track of a context that comes
+/// without uids, such as Liked Songs: the first 20 hex digits of the SHA-1
+/// of its uri. Contexts with duplicates, such as playlists, come with uids.
+fn uid_for(uri: &str) -> String {
+    let digest = Sha1::digest(uri.as_bytes());
+    digest[..10].iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod uid_tests {
+    #[test]
+    fn matches_the_uid_spotify_gives_a_liked_song() {
+        // As Soloist reported it for this track in Liked Songs.
+        assert_eq!(
+            super::uid_for("spotify:track:2bwOeSrKTowqwfaL9Nmbo1"),
+            "864461b876c91b512510"
+        );
     }
 }

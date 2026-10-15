@@ -6,7 +6,8 @@ A copy of `connect/` from [librespot](https://github.com/librespot-org/librespot
 at commit `4a005903e078d512456fb008aaa9ba6246881bd9` (MIT, see `librespot-connect/LICENSE`), wired in through
 `[patch]` in the workspace `Cargo.toml`.
 
-Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
+Local changes, marked `vivace:` in `src/spirc.rs`, `src/state.rs` and
+`src/state/context.rs`:
 
 1. `SpircTask::notify` emits `PlayerEvent::SetQueue` on every state update.
    Upstream emits it only when a context is loaded or the queue is edited, so
@@ -49,6 +50,14 @@ Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
    track; upstream refused it ("transfer context had no uri") and choosing
    the device did nothing. A state with nothing to play is refused before
    the device takes over, instead of leaving it active and stopped.
+
+8. `ConnectState::context_to_provided_track` gives a track that comes without
+   a uid, as every track of Liked Songs does, the uid Spotify's own clients
+   give it: the first 20 hex digits of the SHA-1 of its uri. Upstream made one
+   up at random. Spotify's own players, such as Soloist, look a transferred
+   track up by its uid, and started one they could not find from the
+   beginning; an empty uid instead stopped a sleeping Echo that woke for the
+   transfer.
 
 ## librespot-audio
 

@@ -8,7 +8,7 @@
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
-//!   cli speaker-test <device id> [idle|play]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
+//!   cli speaker-test <device id> [idle|play|next|context=<uri>|paused-context=<uri>]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
 //!   cli idle-test [transfer]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play) starts it again where it was
@@ -854,20 +854,33 @@ async fn speaker_test(config: Config, device: &str, mode: Option<&str>) -> Falli
         .and_then(|state| state.remote.as_ref())
         .map(|remote| remote.device.clone());
     println!("-> state was on {original:?}");
-    if mode != Some("idle") {
+    let paused_context = mode.and_then(|mode| mode.strip_prefix("paused-context="));
+    if let Some(uri) = paused_context.or(mode.and_then(|mode| mode.strip_prefix("context="))) {
+        println!("-> playing the second item of {uri}");
+        engine.play_context(uri, Start::Index(1), false, Repeat::Off)?;
+        watch_connect(&mut events, &mut connect, 10).await;
+        if paused_context.is_some() {
+            engine.pause()?;
+            watch_connect(&mut events, &mut connect, 3).await;
+        }
+    } else if mode != Some("idle") {
         println!("-> taking playback here");
         engine.transfer_here()?;
         watch_connect(&mut events, &mut connect, 5).await;
     }
-    if mode == Some("play") {
+    if matches!(mode, Some("play" | "next")) {
         engine.play()?;
         watch_connect(&mut events, &mut connect, 5).await;
+    }
+    if mode == Some("next") {
+        engine.next()?;
+        watch_connect(&mut events, &mut connect, 8).await;
     }
     let started = Instant::now();
     println!("-> transfer to {device}");
     let result = api.transfer(device).await;
     println!("transfer answered {result:?} in {:?}", started.elapsed());
-    watch_connect(&mut events, &mut connect, 15).await;
+    watch_connect(&mut events, &mut connect, 30).await;
     let on_target = connect
         .as_ref()
         .and_then(|state| state.remote.as_ref())
