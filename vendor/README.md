@@ -44,6 +44,12 @@ Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
    over when its session id is the dropped one (nothing else has played
    since), at the position where it stopped, playing or paused as asked.
 
+7. `SpircTask::handle_transfer` takes over a state whose context has no
+   uri at all like one with an empty uri, from its tracks or its current
+   track; upstream refused it ("transfer context had no uri") and choosing
+   the device did nothing. A state with nothing to play is refused before
+   the device takes over, instead of leaving it active and stopped.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.

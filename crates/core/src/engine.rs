@@ -504,9 +504,10 @@ impl Engine {
     }
 
     /// Starts what this computer last played again where it was, after
-    /// Spotify took playback away from the device; `false` if there is
-    /// nothing to start, or the device still has its playback.
-    fn play_again(&self) -> Result<bool> {
+    /// Spotify took playback away from the device, playing or paused;
+    /// `false` if there is nothing to start, or the device still has its
+    /// playback.
+    fn play_again(&self, start_playing: bool) -> Result<bool> {
         let (queue, position_ms, shuffle, repeat) = {
             let mut last = LastPlayed::shared(&self.last);
             if last.active {
@@ -549,7 +550,7 @@ impl Engine {
                 LoadRequest::from_tracks(
                     uris,
                     LoadRequestOptions {
-                        start_playing: true,
+                        start_playing,
                         seek_to,
                         context_options,
                         playing_track: Some(PlayingTrack::Index(0)),
@@ -562,7 +563,7 @@ impl Engine {
                 LoadRequest::from_context_uri(
                     uri,
                     LoadRequestOptions {
-                        start_playing: true,
+                        start_playing,
                         seek_to,
                         context_options,
                         playing_track: Some(PlayingTrack::Uri(current.uri())),
@@ -601,8 +602,14 @@ impl Engine {
         Ok(self.spirc.clear_queue()?)
     }
 
-    /// Moves playback from whichever device has it to this computer.
+    /// Moves playback from whichever device has it to this computer. With
+    /// no device playing, takes back, paused, what this computer last
+    /// played, rather than the account's stored state, which Spotify may
+    /// have emptied by then.
     pub fn transfer_here(&self) -> Result<()> {
+        if self.play_again(false)? {
+            return Ok(());
+        }
         Ok(self.spirc.transfer(None)?)
     }
 
@@ -623,7 +630,7 @@ impl Engine {
     /// Plays on; if Spotify took playback away from this computer meanwhile,
     /// starts what it last played again where it stopped.
     pub fn play(&self) -> Result<()> {
-        if self.play_again()? {
+        if self.play_again(true)? {
             return Ok(());
         }
         Ok(self.spirc.play()?)

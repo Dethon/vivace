@@ -10,7 +10,7 @@
 //!   cli transfer <device id>     moves playback to another device
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
-//!   cli idle-test     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play starts it again where it was
+//!   cli idle-test [transfer]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play) starts it again where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
@@ -68,7 +68,7 @@ async fn run() -> Fallible<()> {
         return options_test(config).await;
     }
     if args.first() == Some(&"idle-test") {
-        return idle_test(config).await;
+        return idle_test(config, args.get(1) == Some(&"transfer")).await;
     }
     if args.first() == Some(&"drop-test") {
         return drop_test(config, args.get(1).copied()).await;
@@ -832,7 +832,7 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
     Ok(())
 }
 
-async fn idle_test(config: Config) -> Fallible<()> {
+async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
     let (engine, mut events) = Engine::connect(config).await?;
     engine.play_context(
         &engine.liked_songs_uri(),
@@ -870,6 +870,22 @@ async fn idle_test(config: Config) -> Fallible<()> {
     engine.lose_playback()?;
     wait_for(&mut events, 3, |_| false).await;
 
+    if transfer {
+        println!("-> choose this computer");
+        engine.transfer_here()?;
+        let taken = wait_for(&mut events, 20, |event| {
+            matches!(event, Event::Playback(Playback { playing: false, .. }))
+        })
+        .await;
+        match taken {
+            Some(Event::Playback(Playback { position_ms, .. }))
+                if position_ms + 1500 >= paused_at && position_ms <= paused_at + 1500 => {}
+            other => {
+                println!("FAIL: choosing this computer didn't take it back paused ({other:?})");
+                return Ok(());
+            }
+        }
+    }
     println!("-> play");
     engine.play()?;
     let resumed = wait_for(&mut events, 20, |event| {
