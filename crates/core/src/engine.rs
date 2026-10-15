@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures_util::StreamExt;
 use librespot_connect::{
@@ -249,7 +249,9 @@ struct LastPlayed {
     position_ms: u32,
     /// When `position_ms` was reported.
     position_at: Option<Instant>,
-    playing: bool,
+    /// When this computer was last seen playing, while it is. Wall-clock
+    /// time, which goes on while the computer sleeps.
+    playing_at: Option<SystemTime>,
     shuffle: bool,
     repeat: Repeat,
 }
@@ -265,15 +267,19 @@ impl LastPlayed {
                 playing,
                 position_ms,
             }) => {
-                self.playing = *playing;
+                self.playing_at = playing.then(SystemTime::now);
                 self.position_ms = *position_ms;
                 self.position_at = Some(Instant::now());
             }
             Event::Position(position_ms) => {
+                // Positions come every second while playing.
+                if self.playing_at.is_some() {
+                    self.playing_at = Some(SystemTime::now());
+                }
                 self.position_ms = *position_ms;
                 self.position_at = Some(Instant::now());
             }
-            Event::Stopped => self.playing = false,
+            Event::Stopped => self.playing_at = None,
             Event::Shuffle(shuffle) => self.shuffle = *shuffle,
             Event::Repeat(repeat) => self.repeat = *repeat,
             Event::Queue(queue) if queue.current.is_some() => self.queue = Some(queue.clone()),
@@ -290,7 +296,7 @@ impl LastPlayed {
             queue: Some(left_off.queue.clone()),
             position_ms: left_off.position_ms,
             position_at: Some(Instant::now()),
-            playing: left_off.playing,
+            playing_at: left_off.playing.then(SystemTime::now),
             shuffle: left_off.shuffle,
             repeat: left_off.repeat,
         };
@@ -304,7 +310,7 @@ impl LastPlayed {
     }
 
     fn left_off(&self) -> Option<LeftOff> {
-        let playing = self.active && self.playing;
+        let playing = self.active && self.playing_at.is_some();
         // Positions come every second; playback went on since the last one.
         let since = match self.position_at {
             Some(at) if playing => at.elapsed().min(Duration::from_secs(1)),
@@ -495,6 +501,13 @@ impl Engine {
     /// up again after a dropped connection (see [`Resume`]).
     pub fn session_id(&self) -> String {
         self.session.session_id()
+    }
+
+    /// When this computer was last seen playing, if it still was then: for
+    /// deciding, once a dropped connection is back, whether playback goes on
+    /// by itself (see [`Resume::play`]).
+    pub fn playing_at(&self) -> Option<SystemTime> {
+        LastPlayed::shared(&self.last).playing_at
     }
 
     /// URI of the user's Liked Songs, usable as a playback context.
