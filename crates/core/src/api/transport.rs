@@ -178,9 +178,27 @@ impl Transport {
                         let body = response.into_body().collect().await.map_err(network)?;
                         return Ok(body.to_bytes());
                     }
+                    let headers = response.headers().clone();
+                    let body = match response.into_body().collect().await {
+                        Ok(body) => body.to_bytes(),
+                        Err(_) => Bytes::new(),
+                    };
+                    let shown = &body[..body.len().min(RESPONSE_LOG_BYTES)];
+                    // Missing lyrics, covers and the like answer 404 all the time.
+                    let level = if status == StatusCode::NOT_FOUND {
+                        log::Level::Debug
+                    } else {
+                        log::Level::Warn
+                    };
+                    log::log!(
+                        level,
+                        "{method} {} answered {status}: {}",
+                        url.split('?').next().unwrap_or(url),
+                        String::from_utf8_lossy(shown)
+                    );
                     return Err(match status {
                         StatusCode::TOO_MANY_REQUESTS => Error::RateLimited {
-                            retry_after: HttpClient::get_retry_after(response.headers()),
+                            retry_after: HttpClient::get_retry_after(&headers),
                         },
                         StatusCode::NOT_FOUND => Error::NotFound,
                         status => Error::Status(status.as_u16()),
