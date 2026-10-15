@@ -632,8 +632,8 @@ impl Session {
             Request::Repeat(repeat) => match self.remote.clone() {
                 Some(device) => {
                     self.spawn(move |api, _| async move {
-                        let context = RemoteCommand::RepeatContext(repeat == Repeat::Context);
-                        let track = RemoteCommand::RepeatTrack(repeat == Repeat::Track);
+                        let context = RemoteCommand::RepeatContext(repeat.repeats_context());
+                        let track = RemoteCommand::RepeatTrack(repeat.repeats_track());
                         let result = match api.remote(&device, context).await {
                             Ok(()) => api.remote(&device, track).await,
                             failed => failed,

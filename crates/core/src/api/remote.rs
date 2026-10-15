@@ -208,8 +208,8 @@ fn play_body(play: RemotePlay<'_>, shuffle: bool, repeat: Repeat) -> PlayEnvelop
                 skip_to,
                 player_options_override: Modes {
                     shuffling_context: shuffle,
-                    repeating_context: repeat == Repeat::Context,
-                    repeating_track: repeat == Repeat::Track,
+                    repeating_context: repeat.repeats_context(),
+                    repeating_track: repeat.repeats_track(),
                 },
             },
         },
