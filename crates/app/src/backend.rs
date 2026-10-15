@@ -1,11 +1,12 @@
 //! The engine's thread: owns the session and answers the UI's requests.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat, Start,
+    Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat,
+    Resume, Start,
     model::{Chapter, Id, Image, ItemRef, Kind, Lyrics, Progress, Saved, Track},
 };
 
@@ -17,6 +18,10 @@ use crate::{
 };
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+// Playback cut by a dropped connection plays on by itself if the next
+// session comes this soon after it was last seen playing; after longer, such
+// as waking from sleep, it waits.
+const RESUME_PLAYING_WITHIN: Duration = Duration::from_secs(60);
 const WORKER_THREADS: usize = 2;
 const BLOCKING_THREADS: usize = 4;
 const BLOCKING_THREAD_IDLE: Duration = Duration::from_secs(2);
@@ -215,8 +220,13 @@ pub fn spawn(
 enum Ended {
     /// The UI is gone.
     Closed,
-    /// The connection dropped; try again after a pause.
-    Lost,
+    /// The connection dropped; try again after a pause, and carry on with
+    /// what that session, named by its id, was playing.
+    Lost {
+        session_id: String,
+        /// When this computer was last seen playing, if it was at the end.
+        playing: Option<SystemTime>,
+    },
     /// The user changed the configuration or signed out; reconnect at once.
     Restart(Option<Config>),
 }
@@ -227,12 +237,25 @@ async fn run(
     mut requests: UnboundedReceiver<Request>,
     updates: UnboundedSender<Update>,
 ) {
+    // The session whose connection dropped, and when it was last seen playing.
+    let mut lost: Option<(String, Option<SystemTime>)> = None;
     loop {
         if updates.send(Update::Connecting).is_err() {
             return;
         }
+        config.resume = lost.as_ref().map(|(session_id, playing)| Resume {
+            session_id: session_id.clone(),
+            // Wall-clock time, which goes on while the computer sleeps; a
+            // clock set back counts as too long.
+            play: playing.is_some_and(|at| {
+                at.elapsed()
+                    .is_ok_and(|elapsed| elapsed < RESUME_PLAYING_WITHIN)
+            }),
+        });
         match Engine::connect(config.clone()).await {
             Ok((engine, mut events)) => {
+                // Only the first session after a drop takes playback back.
+                lost = None;
                 let session = Session {
                     api: engine.api(),
                     liked_uri: engine.liked_songs_uri(),
@@ -241,10 +264,14 @@ async fn run(
                     queue_sequence: 0,
                     remote: None,
                     remote_track: None,
+                    playing: None,
                 };
                 match session.serve(&mut requests, &mut events).await {
                     Ended::Closed => return,
-                    Ended::Lost => {}
+                    Ended::Lost {
+                        session_id,
+                        playing,
+                    } => lost = Some((session_id, playing)),
                     Ended::Restart(changed) => {
                         if let Some(changed) = changed {
                             // Tools keep the sink they started with.
@@ -277,6 +304,8 @@ struct Session {
     remote: Option<Box<str>>,
     /// Track last announced for that device, to resolve each one once.
     remote_track: Option<ItemRef>,
+    /// When this computer was last seen playing, while it is.
+    playing: Option<SystemTime>,
 }
 
 impl Session {
@@ -312,7 +341,12 @@ impl Session {
                     None => return Ended::Closed,
                 },
                 event = events.recv() => match event {
-                    Some(Event::Disconnected) | None => return Ended::Lost,
+                    Some(Event::Disconnected) | None => {
+                        return Ended::Lost {
+                            session_id: self.engine.session_id(),
+                            playing: self.playing,
+                        };
+                    }
                     Some(event) => self.forward(event),
                 },
             }
@@ -620,9 +654,21 @@ impl Session {
                 let sequence = self.queue_sequence;
                 self.spawn(move |api, _| async move { resolve_queue(&api, queue, sequence).await });
             }
-            Event::Playback(playback) => self.send(Update::Playback(playback)),
-            Event::Position(position_ms) => self.send(Update::Position(position_ms)),
-            Event::Stopped => self.send(Update::Stopped),
+            Event::Playback(playback) => {
+                self.playing = playback.playing.then(SystemTime::now);
+                self.send(Update::Playback(playback));
+            }
+            Event::Position(position_ms) => {
+                // Positions come every second while playing.
+                if self.playing.is_some() {
+                    self.playing = Some(SystemTime::now());
+                }
+                self.send(Update::Position(position_ms));
+            }
+            Event::Stopped => {
+                self.playing = None;
+                self.send(Update::Stopped);
+            }
             Event::Unavailable => self.send(Update::Notice("This track is unavailable".into())),
             Event::Volume(volume) => self.send(Update::Volume(volume)),
             Event::Shuffle(shuffle) => self.send(Update::Shuffle(shuffle)),

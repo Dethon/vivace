@@ -100,6 +100,14 @@ pub struct ConnectConfig {
     /// by itself or by skipping, e.g. where an episode was left. Tracks not
     /// listed start from the beginning.
     pub start_positions: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>>,
+    /// vivace: the session id of this device's previous session, when its
+    /// connection dropped. If the account's playback is still where that
+    /// session left it, this device takes it back on connecting, as it
+    /// would within one session.
+    pub resume_session: Option<String>,
+    /// vivace: whether playback taken back that way plays at once; it
+    /// otherwise waits, paused, where it stopped.
+    pub resume_playing: bool,
 }
 
 impl Default for ConnectConfig {
@@ -114,6 +122,8 @@ impl Default for ConnectConfig {
             emit_set_queue_events: false,
             cluster_listener: None,
             start_positions: None,
+            resume_session: None,
+            resume_playing: false,
         }
     }
 }

@@ -99,6 +99,19 @@ pub struct Config {
     pub persistent_device: bool,
     /// Replaces the system's default audio output, e.g. to discard audio in tools.
     pub sink: Option<SinkFactory>,
+    /// Playback to take back from a session whose connection dropped.
+    pub resume: Option<Resume>,
+}
+
+/// What a session whose connection dropped was doing, so the next one can
+/// carry on: if nothing else has played since, it picks up where that one
+/// left off.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resume {
+    /// The dropped session's [`Engine::session_id`].
+    pub session_id: String,
+    /// Play at once, rather than wait paused where playback stopped.
+    pub play: bool,
 }
 
 impl Config {
@@ -124,6 +137,7 @@ impl Default for Config {
             autoplay: true,
             persistent_device: true,
             sink: None,
+            resume: None,
         }
     }
 }
@@ -287,6 +301,11 @@ impl Engine {
             emit_set_queue_events: true,
             cluster_listener: Some(own_clusters_tx),
             start_positions: Some(start_positions.clone()),
+            resume_session: config
+                .resume
+                .as_ref()
+                .map(|resume| resume.session_id.clone()),
+            resume_playing: config.resume.as_ref().is_some_and(|resume| resume.play),
             ..ConnectConfig::default()
         };
         // Spirc connects the session itself and stores reusable credentials.
@@ -346,6 +365,12 @@ impl Engine {
 
     pub fn username(&self) -> String {
         self.session.username()
+    }
+
+    /// Names this session in the account's playback state, for picking it
+    /// up again after a dropped connection (see [`Resume`]).
+    pub fn session_id(&self) -> String {
+        self.session.session_id()
     }
 
     /// URI of the user's Liked Songs, usable as a playback context.
@@ -459,6 +484,13 @@ impl Engine {
     /// Moves playback from whichever device has it to this computer.
     pub fn transfer_here(&self) -> Result<()> {
         Ok(self.spirc.transfer(None)?)
+    }
+
+    /// Ends the session the way a dropped connection does, for tests of
+    /// what follows.
+    #[doc(hidden)]
+    pub fn drop_connection(&self) {
+        self.session.shutdown();
     }
 
     pub fn play(&self) -> Result<()> {

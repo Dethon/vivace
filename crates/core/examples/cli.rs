@@ -9,6 +9,7 @@
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
+//!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
@@ -26,7 +27,7 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Start, VolumeLevel,
+    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Resume, Start, VolumeLevel,
     model::{Id, ItemRef, Kind, Progress, Track},
 };
 
@@ -63,6 +64,9 @@ async fn run() -> Fallible<()> {
     }
     if args.first() == Some(&"options-test") {
         return options_test(config).await;
+    }
+    if args.first() == Some(&"drop-test") {
+        return drop_test(config, args.get(1).copied()).await;
     }
 
     let started = Instant::now();
@@ -767,6 +771,87 @@ async fn remote(engine: &Engine, events: &mut Events, seconds: u64) -> Fallible<
 }
 
 /// Prints events for `seconds`, optionally skipping to the next track once.
+/// Plays Liked Songs, or an episode as a list of one as search results do,
+/// drops the connection as Spotify's server does now and
+/// then, and reconnects with the same device as the app does. Playback must
+/// carry on by itself from where it was.
+async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
+    // The app keeps its device id across reconnects.
+    config.persistent_device = true;
+    let (engine, mut events) = Engine::connect(config.clone()).await?;
+    match episode {
+        Some(id) => {
+            engine.play_tracks(&[ItemRef::episode(Id::from_base62(id)?)], 0, Repeat::Off)?
+        }
+        None => engine.play_context(
+            &engine.liked_songs_uri(),
+            Start::Beginning,
+            false,
+            Repeat::Off,
+        )?,
+    }
+    let Some(Event::Position(before)) = wait_for(
+        &mut events,
+        30,
+        |event| matches!(event, Event::Position(position_ms) if *position_ms > 8000),
+    )
+    .await
+    else {
+        return Err("the track didn't start".into());
+    };
+    println!("-> playing at {before} ms; dropping the connection");
+    engine.drop_connection();
+    if wait_for(&mut events, 20, |event| *event == Event::Disconnected)
+        .await
+        .is_none()
+    {
+        return Err("the session didn't end".into());
+    }
+    // As the app does, the next session picks up where this one left off.
+    config.resume = Some(Resume {
+        session_id: engine.session_id(),
+        play: true,
+    });
+    drop((engine, events));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let (engine, mut events) = Engine::connect(config).await?;
+    println!("-> reconnected");
+    let carried_on = |event: &Event| matches!(event, Event::Position(position_ms) if *position_ms > before + 3000);
+    let resumed = wait_for(&mut events, 15, carried_on).await;
+    engine.pause()?;
+    match resumed {
+        Some(event) => println!("PASS: playback carried on by itself ({event:?})"),
+        None => println!("FAIL: playback didn't carry on after the reconnect"),
+    }
+    Ok(())
+}
+
+/// Prints events for up to `seconds` until one matches, and returns it.
+async fn wait_for(
+    events: &mut Events,
+    seconds: u64,
+    matches: impl Fn(&Event) -> bool,
+) -> Option<Event> {
+    let deadline = tokio::time::sleep(Duration::from_secs(seconds));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return None,
+            event = events.recv() => {
+                let event = event?;
+                match &event {
+                    Event::Queue(_) | Event::Connect(_) => {}
+                    event => println!("{event:?}"),
+                }
+                if matches(&event) {
+                    return Some(event);
+                }
+            }
+        }
+    }
+}
+
 async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -> Fallible<()> {
     let deadline = tokio::time::sleep(Duration::from_secs(seconds));
     tokio::pin!(deadline);

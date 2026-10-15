@@ -100,6 +100,9 @@ struct SpircTask {
     cluster_listener: Option<mpsc::UnboundedSender<Cluster>>,
     // vivace: see `ConnectConfig::start_positions`.
     start_positions: Option<Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>>,
+    // vivace: see `ConnectConfig::resume_session` and `resume_playing`.
+    resume_session: Option<String>,
+    resume_playing: bool,
 
     shutdown: bool,
     session: Session,
@@ -187,6 +190,8 @@ impl Spirc {
         let emit_set_queue_events = config.emit_set_queue_events;
         let cluster_listener = config.cluster_listener.clone();
         let start_positions = config.start_positions.clone();
+        let resume_session = config.resume_session.clone();
+        let resume_playing = config.resume_playing;
         let connect_state = ConnectState::new(config, &session);
 
         let connection_id_update = session
@@ -266,6 +271,8 @@ impl Spirc {
             emit_set_queue_events,
             cluster_listener,
             start_positions,
+            resume_session,
+            resume_playing,
 
             shutdown: false,
             session,
@@ -938,8 +945,13 @@ impl SpircTask {
         self.connect_established = true;
         self.forward_cluster(cluster.clone());
 
+        // vivace: or the state is the one a dropped session of this device
+        // left, see `ConnectConfig::resume_session`.
+        let resuming =
+            self.resume_session.as_deref() == Some(&*cluster.player_state.session_id);
         let same_session = cluster.player_state.session_id == self.session.session_id()
-            || cluster.player_state.session_id.is_empty();
+            || cluster.player_state.session_id.is_empty()
+            || resuming;
         if !cluster.active_device_id.is_empty() || !same_session {
             info!(
                 "active device is <{}> with session <{}>",
@@ -959,6 +971,15 @@ impl SpircTask {
         use protobuf::Message;
 
         match TransferState::parse_from_bytes(&cluster.transfer_data) {
+            // vivace: the dropped session left its state stopped where
+            // playback stopped; it goes on from there, not from where it
+            // would be had it played on meanwhile.
+            Ok(mut transfer_state) if resuming => {
+                let playback = transfer_state.playback.mut_or_insert_default();
+                playback.is_paused = Some(!self.resume_playing);
+                playback.timestamp = Some(self.now_ms());
+                self.handle_transfer(transfer_state)?
+            }
             Ok(transfer_state) => self.handle_transfer(transfer_state)?,
             Err(why) => error!("failed to take over control: {why}"),
         }

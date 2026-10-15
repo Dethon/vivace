@@ -35,6 +35,15 @@ Local changes, marked `vivace:` in `src/spirc.rs` and `src/state.rs`:
    user left the next episode, so the episode starts there instead of
    starting from zero and jumping once the position is known.
 
+6. `ConnectConfig::resume_session` and `resume_playing` let a new session
+   take back the playback a dropped one left. When Spotify's server closes
+   the connection, the session ends and the device's state is stored as
+   stopped; upstream takes a stored state over on connecting only within
+   the same session, and a reconnect is a new one, so the device stayed
+   idle and ignored play and pause. `handle_connection_id_update` takes it
+   over when its session id is the dropped one (nothing else has played
+   since), at the position where it stopped, playing or paused as asked.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.

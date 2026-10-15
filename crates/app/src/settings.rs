@@ -128,6 +128,7 @@ impl Settings {
             autoplay: self.autoplay,
             persistent_device: true,
             sink: None,
+            resume: None,
         }
     }
 
