@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog, SettingsView } from "types.slint";
 import { Sidebar } from "sidebar.slint";
-import { TopBar } from "topbar.slint";
+import { TopBar, WindowControls } from "topbar.slint";
 import { PageView } from "page.slint";
 import { PlayerBar } from "player-bar.slint";
 import { QueuePanel } from "queue.slint";
@@ -22,6 +22,9 @@ export component MainWindow inherits Window {
     min-width: 640px;
     min-height: 420px;
     background: Theme.background;
+    // The top bar stands in for the title bar, with its own window controls.
+    no-frame: true;
+    resize-border-width: self.maximized ? 0 : 6px;
     // Shortcuts work as soon as the window opens, without clicking first.
     forward-focus: keys;
 
@@ -79,12 +82,27 @@ export component MainWindow inherits Window {
             reject
         }
 
+        // Beneath the top bar, so its buttons and search field keep their
+        // clicks and drags while the empty parts move the window.
+        WindowMoveArea {
+            y: 0;
+            height: 8px + top-bar.height;
+
+            TouchArea {
+                double-clicked => {
+                    root.maximized = !root.maximized;
+                }
+            }
+        }
+
         VerticalLayout {
             padding: 8px;
             padding-bottom: 0;
             spacing: 8px;
 
-            top-bar := TopBar { }
+            top-bar := TopBar {
+                end-inset: window-controls.width;
+            }
 
             HorizontalLayout {
                 spacing: 8px;
@@ -136,6 +154,24 @@ export component MainWindow inherits Window {
             PlayerBar { }
         }
 
+        window-controls := WindowControls {
+            x: root.width - self.width;
+            y: 0;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            maximized: root.maximized;
+            minimize => {
+                root.minimized = true;
+            }
+            toggle-maximized => {
+                root.maximized = !root.maximized;
+            }
+            // Through close-requested, so closing to the tray still works.
+            close => {
+                root.close();
+            }
+        }
+
         if Dialog.visible: DialogOverlay { }
 
         if Session.notice != "": Rectangle {
@@ -153,6 +189,12 @@ export component MainWindow inherits Window {
                 horizontal-alignment: center;
                 overflow: elide;
             }
+        }
+
+        // Without a frame the window's edge would vanish against a dark desktop.
+        if !root.maximized: Rectangle {
+            border-width: 1px;
+            border-color: Theme.divider;
         }
     }
 }

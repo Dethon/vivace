@@ -7,10 +7,14 @@ export component TopBar inherits Rectangle {
         input.focus();
     }
 
+    // Room left free at the right end for the window controls.
+    in property <length> end-inset;
+
     height: 48px;
 
     HorizontalLayout {
         spacing: 8px;
+        padding-right: root.end-inset;
 
         VerticalLayout {
             alignment: center;
@@ -100,6 +104,64 @@ export component TopBar inherits Rectangle {
                     Nav.open-settings();
                 }
             }
+        }
+    }
+}
+
+// A caption button glyph, drawn with thin strokes like the system's own.
+component CaptionButton inherits Rectangle {
+    in property <string> glyph;
+    // Turns red on hover, for the close button.
+    in property <bool> destructive;
+    callback clicked();
+
+    width: 46px;
+    height: 32px;
+    background: touch.has-hover ? (root.destructive ? #c42b1c : Theme.surface-hover) : transparent;
+
+    Path {
+        width: 10px;
+        height: 10px;
+        commands: root.glyph;
+        stroke: touch.has-hover ? Theme.text : Theme.text-muted;
+        stroke-width: 1px;
+        viewbox-width: 10;
+        viewbox-height: 10;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Minimize, maximize/restore and close, for the frameless window.
+export component WindowControls inherits HorizontalLayout {
+    in property <bool> maximized;
+    callback minimize();
+    callback toggle-maximized();
+    callback close();
+
+    CaptionButton {
+        glyph: "M0 5.5H10";
+        clicked => {
+            root.minimize();
+        }
+    }
+
+    CaptionButton {
+        glyph: root.maximized ? "M2.5 0.5H9.5V7.5M0.5 2.5H7.5V9.5H0.5Z" : "M0.5 0.5H9.5V9.5H0.5Z";
+        clicked => {
+            root.toggle-maximized();
+        }
+    }
+
+    CaptionButton {
+        glyph: "M0 0L10 10M10 0L0 10";
+        destructive: true;
+        clicked => {
+            root.close();
         }
     }
 }
