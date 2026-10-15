@@ -1,6 +1,9 @@
 //! The engine's thread: owns the session and answers the UI's requests.
 
-use std::time::{Duration, SystemTime};
+use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -22,6 +25,9 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 // session comes this soon after it was last seen playing; after longer, such
 // as waking from sleep, it waits.
 const RESUME_PLAYING_WITHIN: Duration = Duration::from_secs(60);
+// How soon after being resumed a speaker that drops out is resumed again:
+// Soloist stops a second after a resume that follows a short pause.
+const RESUME_DROPOUT: Duration = Duration::from_secs(3);
 const WORKER_THREADS: usize = 2;
 const BLOCKING_THREADS: usize = 4;
 const BLOCKING_THREAD_IDLE: Duration = Duration::from_secs(2);
@@ -271,6 +277,9 @@ async fn run(
                     updates: updates.clone(),
                     queue_sequence: 0,
                     remote: None,
+                    last_remote: None,
+                    resumed: RefCell::default(),
+                    commands: Arc::default(),
                     remote_track: None,
                     playing: None,
                 };
@@ -311,6 +320,14 @@ struct Session {
     queue_sequence: u64,
     /// The device that is playing, when it is not this computer.
     remote: Option<Box<str>>,
+    /// The other device that played last, kept while no device is active:
+    /// one can drop out for a moment, and the controls still mean it.
+    last_remote: Option<Box<str>>,
+    /// The other device last resumed from here, and when.
+    resumed: RefCell<Option<(Box<str>, Instant)>>,
+    /// Counts the commands sent to other devices, so that a slow recovery
+    /// gives way to whatever the user pressed since.
+    commands: Arc<AtomicU64>,
     /// Track last announced for that device, to resolve each one once.
     remote_track: Option<ItemRef>,
     /// When this computer was last seen playing, while it is.
@@ -368,14 +385,32 @@ impl Session {
         remote: RemoteCommand,
         local: impl FnOnce(&Engine) -> vivace_core::Result<()>,
     ) -> vivace_core::Result<()> {
-        let Some(device) = self.remote.clone() else {
+        let Some(device) = self.remote.clone().or_else(|| self.last_remote.clone()) else {
             return local(&self.engine);
         };
+        if remote == RemoteCommand::Resume {
+            self.resumed.replace(Some((device.clone(), Instant::now())));
+        }
+        self.command_remote(device, remote);
+        Ok(())
+    }
+
+    fn command_remote(&self, device: Box<str>, remote: RemoteCommand) {
+        let commands = self.commands.clone();
+        let this = commands.fetch_add(1, Ordering::Relaxed) + 1;
         self.spawn(move |api, _| async move {
-            let result = api.remote(&device, remote).await;
+            let latest = || commands.load(Ordering::Relaxed) == this;
+            let mut result = api.remote(&device, remote).await;
+            // A speaker that dropped out refuses commands until it takes
+            // playback again.
+            if result.is_err() && remote == RemoteCommand::Resume && latest() {
+                result = api.transfer(&device).await;
+                if result.is_ok() && latest() {
+                    result = api.remote(&device, remote).await;
+                }
+            }
             result.err().map(|error| Update::Notice(error.to_string()))
         });
-        Ok(())
     }
 
     fn handle(&self, request: Request) {
@@ -693,6 +728,18 @@ impl Session {
 
     fn connect_changed(&mut self, connect: Connect) {
         self.remote = connect.remote.as_ref().map(|remote| remote.device.clone());
+        if self.remote.is_some() {
+            self.last_remote = self.remote.clone();
+        } else if connect.devices.iter().any(|device| device.is_active) {
+            // This computer plays.
+            self.last_remote = None;
+        } else if let Some((device, at)) = self.resumed.take()
+            && at.elapsed() < RESUME_DROPOUT
+            && self.last_remote.as_ref() == Some(&device)
+        {
+            log::info!("{device} dropped out after being resumed; resuming it again");
+            self.command_remote(device, RemoteCommand::Resume);
+        }
         match &connect.remote {
             Some(remote) => {
                 // The remote device's track and queue stand in for the local ones.

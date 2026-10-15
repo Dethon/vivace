@@ -257,6 +257,7 @@ impl Api {
 
     /// Sends a transport command to another device.
     pub async fn remote(&self, device: &str, command: RemoteCommand) -> Result<()> {
+        log::debug!("sending {command:?} to {device}");
         let body = serde_json::to_vec(&command.body()).map_err(decode)?;
         self.command(device, body).await
     }
@@ -284,6 +285,7 @@ impl Api {
             "/connect-state/v1/connect/transfer/from/{}/to/{device}",
             self.device_id()
         );
+        log::debug!("moving playback to {device}");
         let woken_by = Instant::now() + WAKE_TIMEOUT;
         loop {
             match self

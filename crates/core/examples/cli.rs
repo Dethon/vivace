@@ -6,8 +6,10 @@
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
+//!   cli remote-pause <device id>     pauses another device
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
+//!   cli control-test <device id> [seconds]     plays Liked Songs, moves it to a device and pauses and resumes it there twice, `seconds` apart
 //!   cli pull-test [seconds]     waits, then takes playback here as choosing this computer does, and prints what follows
 //!   cli speaker-test <device id> [idle|play|next|context=<uri>|paused-context=<uri>]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
@@ -246,9 +248,38 @@ async fn run() -> Fallible<()> {
             }
             println!("recorded {:?}", api.episode_progress(episode.id).await?);
         }
+        ["remote-pause", device] => {
+            println!("{:?}", api.remote(device, RemoteCommand::Pause).await);
+        }
         ["remote-volume", device, volume] => {
             api.remote_volume(device, volume.parse()?).await?;
             println!("set {device} to {volume}");
+        }
+        ["control-test", device, rest @ ..] => {
+            // Hands playback to `device`, then pauses and resumes it there as
+            // the player controls do, `wait` seconds apart, printing what the
+            // account says between.
+            let wait = rest.first().map_or(Ok(5), |wait| wait.parse())?;
+            engine.play_context(
+                &engine.liked_songs_uri(),
+                Start::Index(1),
+                false,
+                Repeat::Off,
+            )?;
+            let mut connect = None;
+            watch_connect(&mut events, &mut connect, 6).await;
+            println!("-> transfer: {:?}", api.transfer(device).await);
+            watch_connect(&mut events, &mut connect, wait).await;
+            for command in [
+                RemoteCommand::Pause,
+                RemoteCommand::Resume,
+                RemoteCommand::Pause,
+                RemoteCommand::Resume,
+            ] {
+                println!("-> {command:?}: {:?}", api.remote(device, command).await);
+                watch_connect(&mut events, &mut connect, wait).await;
+            }
+            watch_connect(&mut events, &mut connect, 5).await;
         }
         ["pull-test", rest @ ..] => {
             // Takes playback here as choosing this computer does, after

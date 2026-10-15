@@ -12,6 +12,9 @@
 //! episode from where it was left, and saves it to Your Episodes and back.
 //! With `LIVE_SETTINGS=1` it changes settings and signs out; afterwards the
 //! saved login is gone, so keep a copy of it to restore.
+//! With `LIVE_REMOTE=<device name>` it plays Liked Songs, moves playback to
+//! that device from the device list, then pauses and plays it from the player
+//! bar, printing what the bar shows after each step. It plays on that device.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -32,7 +35,7 @@ use slint::platform::software_renderer::{
 use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
 use slint::{ComponentHandle, EventLoopError, Model, PhysicalSize, PlatformError};
 use vivace::{
-    App, Config, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind,
+    App, Config, Devices, Dialog, Library, LyricsView, MainWindow, Nav, Player, Queue, RowKind,
     SettingsView, TrackAction,
 };
 
@@ -609,6 +612,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             4000,
             Box::new(|ui| ui.global::<Dialog>().invoke_confirmed("".into())),
         ));
+    }
+
+    if let Ok(target) = std::env::var("LIVE_REMOTE") {
+        let report = |ui: &MainWindow| {
+            println!(
+                "   bar: playing on {:?}, button shows {}",
+                ui.global::<Devices>().get_remote_name(),
+                if ui.global::<Player>().get_playing() {
+                    "pause"
+                } else {
+                    "play"
+                },
+            );
+        };
+        let toggle = move |ui: &MainWindow| {
+            report(ui);
+            ui.global::<Player>().invoke_toggle();
+        };
+        // `LIVE_REMOTE_WAIT` sets the milliseconds between moving and toggling.
+        let wait: u64 = std::env::var("LIVE_REMOTE_WAIT")
+            .ok()
+            .and_then(|wait| wait.parse().ok())
+            .unwrap_or(5000);
+        steps = vec![
+            ("r1-home", 5000, Box::new(|_| {})),
+            (
+                "r2-liked",
+                3000,
+                Box::new(|ui| {
+                    // Plays here first, as when the user started on this computer.
+                    let items = ui.global::<Devices>().get_items();
+                    if let Some(index) = items.iter().position(|item| item.local && !item.active) {
+                        ui.global::<Devices>().invoke_transfer(index as i32);
+                    }
+                    ui.global::<Library>().invoke_open(0);
+                }),
+            ),
+            (
+                "r3-playing",
+                5000,
+                Box::new(move |ui| {
+                    ui.global::<Nav>()
+                        .invoke_play_track(first_row(ui, RowKind::Track) + 1)
+                }),
+            ),
+            (
+                "r4-moved",
+                wait,
+                Box::new(move |ui| {
+                    report(ui);
+                    let items = ui.global::<Devices>().get_items();
+                    match items
+                        .iter()
+                        .position(|item| item.name.contains(target.as_str()))
+                    {
+                        Some(index) => ui.global::<Devices>().invoke_transfer(index as i32),
+                        None => println!("no device named {target:?}"),
+                    }
+                }),
+            ),
+            ("r5-paused", wait, Box::new(toggle)),
+            ("r6-playing", wait, Box::new(toggle)),
+            ("r7-paused", wait, Box::new(toggle)),
+            ("r8-playing", wait, Box::new(toggle)),
+            ("r9-paused", wait, Box::new(toggle)),
+            ("r10-end", 500, Box::new(report)),
+        ];
     }
 
     // Starting playback takes it away from whichever device has it, so the
