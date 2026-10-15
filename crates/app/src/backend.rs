@@ -226,16 +226,36 @@ pub fn spawn(
 enum Ended {
     /// The UI is gone.
     Closed,
-    /// The connection dropped; try again after a pause, and carry on with
-    /// what that session, named by its id, was playing.
-    Lost {
-        session_id: String,
-        /// When this computer was last seen playing, if it was at the end.
-        playing: Option<SystemTime>,
+    /// The connection dropped; try again after a pause.
+    Lost(Lost),
+    /// The user changed the configuration or signed out; reconnect at once.
+    Restart {
+        /// The new configuration; none after signing out.
+        config: Option<Config>,
+        /// What was playing, if it should carry over.
+        left_off: Option<LeftOff>,
     },
-    /// The user changed the configuration or signed out; reconnect at once,
-    /// carrying on with what was playing, if anything should carry over.
-    Restart(Option<Config>, Option<LeftOff>),
+}
+
+/// A session whose connection dropped, for the next one to carry on from.
+struct Lost {
+    session_id: String,
+    /// When this computer was last seen playing, if it still was then.
+    playing_at: Option<SystemTime>,
+}
+
+impl Lost {
+    /// What the next session takes back, decided as it connects.
+    fn resume(&self) -> Resume {
+        Resume {
+            session_id: self.session_id.clone(),
+            // A clock set back counts as too long.
+            play: self.playing_at.is_some_and(|at| {
+                at.elapsed()
+                    .is_ok_and(|elapsed| elapsed < RESUME_PLAYING_WITHIN)
+            }),
+        }
+    }
 }
 
 /// Keeps a session alive until the UI goes away, reconnecting as needed.
@@ -244,23 +264,15 @@ async fn run(
     mut requests: UnboundedReceiver<Request>,
     updates: UnboundedSender<Update>,
 ) {
-    // The session whose connection dropped, and when it was last seen playing.
-    let mut lost: Option<(String, Option<SystemTime>)> = None;
+    // The session whose connection dropped.
+    let mut lost: Option<Lost> = None;
     // Playback to carry into the session a settings change starts.
     let mut left_off: Option<LeftOff> = None;
     loop {
         if updates.send(Update::Connecting).is_err() {
             return;
         }
-        config.resume = lost.as_ref().map(|(session_id, playing)| Resume {
-            session_id: session_id.clone(),
-            // Wall-clock time, which goes on while the computer sleeps; a
-            // clock set back counts as too long.
-            play: playing.is_some_and(|at| {
-                at.elapsed()
-                    .is_ok_and(|elapsed| elapsed < RESUME_PLAYING_WITHIN)
-            }),
-        });
+        config.resume = lost.as_ref().map(Lost::resume);
         match Engine::connect(config.clone()).await {
             Ok((engine, mut events)) => {
                 // Only the first session after a drop takes playback back.
@@ -281,15 +293,14 @@ async fn run(
                     resumed: RefCell::default(),
                     commands: Arc::default(),
                     remote_track: None,
-                    playing: None,
                 };
                 match session.serve(&mut requests, &mut events).await {
                     Ended::Closed => return,
-                    Ended::Lost {
-                        session_id,
-                        playing,
-                    } => lost = Some((session_id, playing)),
-                    Ended::Restart(changed, carried) => {
+                    Ended::Lost(dropped) => lost = Some(dropped),
+                    Ended::Restart {
+                        config: changed,
+                        left_off: carried,
+                    } => {
                         left_off = carried;
                         if let Some(changed) = changed {
                             // Tools keep the sink they started with.
@@ -330,8 +341,6 @@ struct Session {
     commands: Arc<AtomicU64>,
     /// Track last announced for that device, to resolve each one once.
     remote_track: Option<ItemRef>,
-    /// When this computer was last seen playing, while it is.
-    playing: Option<SystemTime>,
 }
 
 impl Session {
@@ -354,24 +363,30 @@ impl Session {
                     }
                     Some(Request::Configure(config)) => {
                         self.engine.save_progress().await;
-                        return Ended::Restart(Some(config), self.engine.left_off());
+                        return Ended::Restart {
+                            config: Some(config),
+                            left_off: self.engine.left_off(),
+                        };
                     }
                     Some(Request::SignOut) => {
                         self.engine.save_progress().await;
                         // Keyring backends block.
                         _ = tokio::task::spawn_blocking(vivace_core::sign_out).await;
                         self.send(Update::SignedOut);
-                        return Ended::Restart(None, None);
+                        return Ended::Restart {
+                            config: None,
+                            left_off: None,
+                        };
                     }
                     Some(request) => self.handle(request),
                     None => return Ended::Closed,
                 },
                 event = events.recv() => match event {
                     Some(Event::Disconnected) | None => {
-                        return Ended::Lost {
+                        return Ended::Lost(Lost {
                             session_id: self.engine.session_id(),
-                            playing: self.playing,
-                        };
+                            playing_at: self.engine.playing_at(),
+                        });
                     }
                     Some(event) => self.forward(event),
                 },
@@ -696,21 +711,9 @@ impl Session {
                 let sequence = self.queue_sequence;
                 self.spawn(move |api, _| async move { resolve_queue(&api, queue, sequence).await });
             }
-            Event::Playback(playback) => {
-                self.playing = playback.playing.then(SystemTime::now);
-                self.send(Update::Playback(playback));
-            }
-            Event::Position(position_ms) => {
-                // Positions come every second while playing.
-                if self.playing.is_some() {
-                    self.playing = Some(SystemTime::now());
-                }
-                self.send(Update::Position(position_ms));
-            }
-            Event::Stopped => {
-                self.playing = None;
-                self.send(Update::Stopped);
-            }
+            Event::Playback(playback) => self.send(Update::Playback(playback)),
+            Event::Position(position_ms) => self.send(Update::Position(position_ms)),
+            Event::Stopped => self.send(Update::Stopped),
             Event::Unavailable => self.send(Update::Notice("This track is unavailable".into())),
             Event::Volume(volume) => self.send(Update::Volume(volume)),
             Event::Shuffle(shuffle) => self.send(Update::Shuffle(shuffle)),
