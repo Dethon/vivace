@@ -10,6 +10,7 @@
 //!   cli transfer <device id>     moves playback to another device
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
+//!   cli idle-test     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play starts it again where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
@@ -27,7 +28,8 @@ use librespot_playback::{
 };
 
 use vivace_core::{
-    Config, Engine, Event, Events, RemoteCommand, RemotePlay, Repeat, Resume, Start, VolumeLevel,
+    Config, Engine, Event, Events, Playback, RemoteCommand, RemotePlay, Repeat, Resume, Start,
+    VolumeLevel,
     model::{Id, ItemRef, Kind, Progress, Track},
 };
 
@@ -64,6 +66,9 @@ async fn run() -> Fallible<()> {
     }
     if args.first() == Some(&"options-test") {
         return options_test(config).await;
+    }
+    if args.first() == Some(&"idle-test") {
+        return idle_test(config).await;
     }
     if args.first() == Some(&"drop-test") {
         return drop_test(config, args.get(1).copied()).await;
@@ -825,6 +830,77 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
         None => println!("FAIL: playback didn't carry on after the reconnect"),
     }
     Ok(())
+}
+
+async fn idle_test(config: Config) -> Fallible<()> {
+    let (engine, mut events) = Engine::connect(config).await?;
+    engine.play_context(
+        &engine.liked_songs_uri(),
+        Start::Beginning,
+        false,
+        Repeat::Off,
+    )?;
+    let Some(Event::Item(item)) =
+        wait_for(&mut events, 30, |event| matches!(event, Event::Item(_))).await
+    else {
+        return Err("nothing started".into());
+    };
+    if wait_for(
+        &mut events,
+        30,
+        |event| matches!(event, Event::Position(position_ms) if *position_ms > 8000),
+    )
+    .await
+    .is_none()
+    {
+        return Err("the track didn't start".into());
+    }
+    engine.pause()?;
+    let Some(Event::Playback(Playback {
+        position_ms: paused_at,
+        ..
+    })) = wait_for(&mut events, 10, |event| {
+        matches!(event, Event::Playback(Playback { playing: false, .. }))
+    })
+    .await
+    else {
+        return Err("the track didn't pause".into());
+    };
+    println!("-> paused {item:?} at {paused_at} ms; losing playback");
+    engine.lose_playback()?;
+    wait_for(&mut events, 3, |_| false).await;
+
+    println!("-> play");
+    engine.play()?;
+    let resumed = wait_for(&mut events, 20, |event| {
+        matches!(event, Event::Playback(Playback { playing: true, .. }))
+    })
+    .await;
+    let same_item = events_item(&mut events, item).await;
+    engine.pause()?;
+    match resumed {
+        Some(Event::Playback(Playback { position_ms, .. }))
+            if position_ms + 1500 >= paused_at && position_ms <= paused_at + 3000 && same_item =>
+        {
+            println!("PASS: {item:?} started again at {position_ms} ms")
+        }
+        Some(event) => {
+            println!("FAIL: played, but not where it stopped ({event:?}, same item: {same_item})")
+        }
+        None => println!("FAIL: play did nothing"),
+    }
+    Ok(())
+}
+
+/// Whether the player is still on `item` a couple of seconds on.
+async fn events_item(events: &mut Events, item: ItemRef) -> bool {
+    let other = wait_for(
+        events,
+        2,
+        |event| matches!(event, Event::Item(other) if *other != item),
+    )
+    .await;
+    other.is_none()
 }
 
 /// Prints events for up to `seconds` until one matches, and returns it.

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -200,6 +200,41 @@ pub enum Event {
     Disconnected,
 }
 
+/// What this computer last played, so that [`Engine::play`] can start it
+/// again once Spotify has taken playback away from the device. Spotify does
+/// that by itself to a device left paused for a while; librespot then drops
+/// its queue and ignores play, as if nothing had been playing.
+#[derive(Debug, Default)]
+struct LastPlayed {
+    /// This computer is the account's active device.
+    active: bool,
+    /// Forgotten when another device plays, so that play does not bring
+    /// back something older than what the user listened to there.
+    queue: Option<Queue>,
+    position_ms: u32,
+    shuffle: bool,
+    repeat: Repeat,
+}
+
+impl LastPlayed {
+    fn shared(last: &Mutex<Self>) -> std::sync::MutexGuard<'_, Self> {
+        last.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn remember(&mut self, event: &Event) {
+        match event {
+            Event::Playback(Playback { position_ms, .. }) | Event::Position(position_ms) => {
+                self.position_ms = *position_ms;
+            }
+            Event::Shuffle(shuffle) => self.shuffle = *shuffle,
+            Event::Repeat(repeat) => self.repeat = *repeat,
+            Event::Queue(queue) if queue.current.is_some() => self.queue = Some(queue.clone()),
+            Event::Connect(connect) if connect.remote.is_some() => self.queue = None,
+            _ => {}
+        }
+    }
+}
+
 /// A signed-in session that plays on this computer as a Spotify Connect device.
 pub struct Engine {
     session: Session,
@@ -211,6 +246,7 @@ pub struct Engine {
     /// Counts loads, so one that waited for a resume point can tell it was
     /// overtaken by a newer one.
     loads: Arc<AtomicU64>,
+    last: Arc<Mutex<LastPlayed>>,
 }
 
 impl Engine {
@@ -334,6 +370,7 @@ impl Engine {
             player.get_player_event_channel(),
             start_positions,
         );
+        let last = Arc::<Mutex<LastPlayed>>::default();
         let events = Events {
             player: player.get_player_event_channel(),
             cluster,
@@ -343,6 +380,7 @@ impl Engine {
             current: None,
             pending: None,
             device_id: session.device_id().into(),
+            last: last.clone(),
             _player: player,
         };
         let (volume, settled) = watch::channel(initial_volume);
@@ -355,6 +393,7 @@ impl Engine {
             volume,
             recorder,
             loads: Arc::default(),
+            last,
         };
         Ok((engine, events))
     }
@@ -439,12 +478,12 @@ impl Engine {
         episode: Option<Id>,
         request: impl FnOnce(u32) -> LoadRequest + Send + 'static,
     ) -> Result<()> {
+        let Some(episode) = episode else {
+            return self.load_at(0, request);
+        };
         // Loads are ignored unless this device is the active one.
         self.spirc.activate()?;
         let load = self.loads.fetch_add(1, Ordering::Relaxed) + 1;
-        let Some(episode) = episode else {
-            return Ok(self.spirc.load(request(0))?);
-        };
         let (api, spirc, loads) = (self.api(), self.spirc.clone(), self.loads.clone());
         tokio::spawn(async move {
             let seek_to = progress::resume_point(&api, episode).await.unwrap_or(0);
@@ -455,6 +494,87 @@ impl Engine {
             }
         });
         Ok(())
+    }
+
+    /// Loads what `request` describes, starting at `position_ms`.
+    fn load_at(&self, position_ms: u32, request: impl FnOnce(u32) -> LoadRequest) -> Result<()> {
+        self.spirc.activate()?;
+        self.loads.fetch_add(1, Ordering::Relaxed);
+        Ok(self.spirc.load(request(position_ms))?)
+    }
+
+    /// Starts what this computer last played again where it was, after
+    /// Spotify took playback away from the device; `false` if there is
+    /// nothing to start, or the device still has its playback.
+    fn play_again(&self) -> Result<bool> {
+        let (queue, position_ms, shuffle, repeat) = {
+            let mut last = LastPlayed::shared(&self.last);
+            if last.active {
+                return Ok(false);
+            }
+            let Some(queue) = last.queue.clone() else {
+                return Ok(false);
+            };
+            // A second press before the load lands must not load again.
+            last.active = true;
+            (queue, last.position_ms, last.shuffle, last.repeat)
+        };
+        let Some(current) = queue.current else {
+            return Ok(false);
+        };
+        log::info!("playback was taken away from this device; starting it again");
+        let context_options = Some(LoadContextOptions::Options(Options {
+            shuffle,
+            repeat: repeat == Repeat::Context,
+            repeat_track: repeat == Repeat::Track,
+        }));
+        let queued = queue
+            .next
+            .iter()
+            .filter(|next| next.queued)
+            .map(|next| next.item);
+        if queue.context_uri.is_empty() {
+            // A list of tracks: the rest of it is what was coming up.
+            let uris = std::iter::once(current)
+                .chain(
+                    queue
+                        .next
+                        .iter()
+                        .filter(|next| !next.queued)
+                        .map(|next| next.item),
+                )
+                .map(|item| item.uri())
+                .collect();
+            self.load_at(position_ms, |seek_to| {
+                LoadRequest::from_tracks(
+                    uris,
+                    LoadRequestOptions {
+                        start_playing: true,
+                        seek_to,
+                        context_options,
+                        playing_track: Some(PlayingTrack::Index(0)),
+                    },
+                )
+            })?;
+        } else {
+            let uri = queue.context_uri.to_string();
+            self.load_at(position_ms, |seek_to| {
+                LoadRequest::from_context_uri(
+                    uri,
+                    LoadRequestOptions {
+                        start_playing: true,
+                        seek_to,
+                        context_options,
+                        playing_track: Some(PlayingTrack::Uri(current.uri())),
+                    },
+                )
+            })?;
+        }
+        // The load cleared what the user had queued by hand.
+        for item in queued {
+            self.add_to_queue(item)?;
+        }
+        Ok(true)
     }
 
     /// Records where the playing episode is, for closing the app.
@@ -493,7 +613,19 @@ impl Engine {
         self.session.shutdown();
     }
 
+    /// Makes the device inactive the way Spotify does to one left paused for
+    /// a while, for tests of what follows.
+    #[doc(hidden)]
+    pub fn lose_playback(&self) -> Result<()> {
+        Ok(self.spirc.disconnect(true)?)
+    }
+
+    /// Plays on; if Spotify took playback away from this computer meanwhile,
+    /// starts what it last played again where it stopped.
     pub fn play(&self) -> Result<()> {
+        if self.play_again()? {
+            return Ok(());
+        }
         Ok(self.spirc.play()?)
     }
 
@@ -570,6 +702,7 @@ pub struct Events {
     /// An event held back while the item it belongs to is announced first.
     pending: Option<Event>,
     device_id: Box<str>,
+    last: Arc<Mutex<LastPlayed>>,
     // Keeps the event channel open for as long as events are being read.
     _player: Arc<Player>,
 }
@@ -577,6 +710,12 @@ pub struct Events {
 impl Events {
     /// Waits for the next event; `None` after [`Event::Disconnected`].
     pub async fn recv(&mut self) -> Option<Event> {
+        let event = self.next().await?;
+        LastPlayed::shared(&self.last).remember(&event);
+        Some(event)
+    }
+
+    async fn next(&mut self) -> Option<Event> {
         if let Some(event) = self.pending.take() {
             return Some(event);
         }
@@ -587,7 +726,7 @@ impl Events {
                     self.closed = None;
                     return Some(Event::Disconnected);
                 }
-                event = self.player.recv() => match self.announce(event?) {
+                event = self.player.recv() => match self.announce(self.activity(event?)) {
                     // The queue is re-sent with every state update; most are unchanged.
                     Some(Event::Queue(queue)) if self.queue.as_ref() == Some(&queue) => {}
                     Some(Event::Queue(queue)) => {
@@ -609,6 +748,19 @@ impl Events {
 }
 
 impl Events {
+    /// Notes whether this computer is the account's active device, which
+    /// librespot reports only through these events.
+    fn activity(&self, event: PlayerEvent) -> PlayerEvent {
+        match event {
+            PlayerEvent::SessionConnected { .. } => LastPlayed::shared(&self.last).active = true,
+            PlayerEvent::SessionDisconnected { .. } => {
+                LastPlayed::shared(&self.last).active = false;
+            }
+            _ => {}
+        }
+        event
+    }
+
     /// Converts a player event, first announcing the item it is about when
     /// that changed. A track that was preloaded, as at every gapless
     /// change, starts with `Playing` and no `Loading`.
