@@ -127,14 +127,10 @@ impl Connect {
                     position_ms: position.try_into().unwrap_or_default(),
                     duration_ms: state.duration.try_into().unwrap_or_default(),
                     shuffle: state.options.shuffling_context,
-                    repeat: match (
-                        state.options.repeating_track,
+                    repeat: Repeat::from_flags(
                         state.options.repeating_context,
-                    ) {
-                        (true, _) => Repeat::Track,
-                        (false, true) => Repeat::Context,
-                        (false, false) => Repeat::Off,
-                    },
+                        state.options.repeating_track,
+                    ),
                     volume: info.volume as f32 / f32::from(u16::MAX),
                 }
             });

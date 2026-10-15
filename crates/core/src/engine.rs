@@ -158,6 +158,27 @@ pub enum Repeat {
     Track,
 }
 
+impl Repeat {
+    /// From Spotify's two flags; repeating the track wins.
+    pub(crate) fn from_flags(context: bool, track: bool) -> Self {
+        match (track, context) {
+            (true, _) => Repeat::Track,
+            (false, true) => Repeat::Context,
+            (false, false) => Repeat::Off,
+        }
+    }
+
+    /// Whether the context starts again when it ends.
+    pub fn repeats_context(self) -> bool {
+        self == Repeat::Context
+    }
+
+    /// Whether the current track plays again and again.
+    pub fn repeats_track(self) -> bool {
+        self == Repeat::Track
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Playback {
     pub playing: bool,
@@ -212,10 +233,12 @@ pub struct LeftOff {
     pub playing: bool,
 }
 
-/// What this computer last played, so that [`Engine::play`] can start it
-/// again once Spotify has taken playback away from the device. Spotify does
-/// that by itself to a device left paused for a while; librespot then drops
-/// its queue and ignores play, as if nothing had been playing.
+/// What this computer last played, and whether it still has the account's
+/// playback. [`Engine::play`] starts it again once Spotify has taken playback
+/// away from the device, which Spotify does by itself to a device left paused
+/// for a while; librespot then drops its queue and ignores play, as if
+/// nothing had been playing. [`Engine::left_off`] carries it into a new
+/// session.
 #[derive(Debug, Default)]
 struct LastPlayed {
     /// This computer is the account's active device.
@@ -256,6 +279,27 @@ impl LastPlayed {
             Event::Queue(queue) if queue.current.is_some() => self.queue = Some(queue.clone()),
             Event::Connect(connect) if connect.remote.is_some() => self.queue = None,
             _ => {}
+        }
+    }
+
+    /// Takes on where a previous session left off, as the player would
+    /// report it, so that it is known before the player does.
+    fn restore(&mut self, left_off: &LeftOff) {
+        *self = LastPlayed {
+            active: true,
+            queue: Some(left_off.queue.clone()),
+            position_ms: left_off.position_ms,
+            position_at: Some(Instant::now()),
+            playing: left_off.playing,
+            shuffle: left_off.shuffle,
+            repeat: left_off.repeat,
+        };
+    }
+
+    /// Where play starts again, if Spotify took playback away.
+    fn seek(&mut self, position_ms: u32) {
+        if !self.active {
+            self.position_ms = position_ms;
         }
     }
 
@@ -476,11 +520,7 @@ impl Engine {
             let options = LoadRequestOptions {
                 start_playing: true,
                 seek_to,
-                context_options: Some(LoadContextOptions::Options(Options {
-                    shuffle,
-                    repeat: repeat == Repeat::Context,
-                    repeat_track: repeat == Repeat::Track,
-                })),
+                context_options: context_options(shuffle, repeat),
                 playing_track: match start {
                     Start::Beginning => None,
                     Start::Index(index) => Some(PlayingTrack::Index(index)),
@@ -500,11 +540,7 @@ impl Engine {
             let options = LoadRequestOptions {
                 start_playing: true,
                 seek_to,
-                context_options: Some(LoadContextOptions::Options(Options {
-                    shuffle: false,
-                    repeat: repeat == Repeat::Context,
-                    repeat_track: repeat == Repeat::Track,
-                })),
+                context_options: context_options(false, repeat),
                 playing_track: Some(PlayingTrack::Index(index)),
             };
             LoadRequest::from_tracks(uris, options)
@@ -520,7 +556,7 @@ impl Engine {
         request: impl FnOnce(u32) -> LoadRequest + Send + 'static,
     ) -> Result<()> {
         let Some(episode) = episode else {
-            return self.load_at(0, request);
+            return self.load_now(request(0));
         };
         // Loads are ignored unless this device is the active one.
         self.spirc.activate()?;
@@ -537,11 +573,13 @@ impl Engine {
         Ok(())
     }
 
-    /// Loads what `request` describes, starting at `position_ms`.
-    fn load_at(&self, position_ms: u32, request: impl FnOnce(u32) -> LoadRequest) -> Result<()> {
+    /// Loads `request` at once, overtaking a load still waiting for an
+    /// episode's resume point.
+    fn load_now(&self, request: LoadRequest) -> Result<()> {
+        // Loads are ignored unless this device is the active one.
         self.spirc.activate()?;
         self.loads.fetch_add(1, Ordering::Relaxed);
-        Ok(self.spirc.load(request(position_ms))?)
+        Ok(self.spirc.load(request)?)
     }
 
     /// Starts what this computer last played again where it was, after
@@ -575,18 +613,9 @@ impl Engine {
     /// Carries on with what a previous session left off, playing or paused
     /// as it was.
     pub fn pick_up(&self, left_off: LeftOff) -> Result<()> {
-        {
-            // Known at once, should another session follow before the
-            // player reports anything.
-            let mut last = LastPlayed::shared(&self.last);
-            last.active = true;
-            last.queue = Some(left_off.queue.clone());
-            last.position_ms = left_off.position_ms;
-            last.position_at = Some(Instant::now());
-            last.playing = left_off.playing;
-            last.shuffle = left_off.shuffle;
-            last.repeat = left_off.repeat;
-        }
+        // Known at once, should another session follow before the player
+        // reports anything.
+        LastPlayed::shared(&self.last).restore(&left_off);
         let playing = left_off.playing;
         self.start_from(left_off, playing)
     }
@@ -602,56 +631,31 @@ impl Engine {
         let Some(current) = queue.current else {
             return Ok(());
         };
-        let context_options = Some(LoadContextOptions::Options(Options {
-            shuffle,
-            repeat: repeat == Repeat::Context,
-            repeat_track: repeat == Repeat::Track,
-        }));
-        let queued = queue
-            .next
-            .iter()
-            .filter(|next| next.queued)
-            .map(|next| next.item);
-        if queue.context_uri.is_empty() {
+        let (queued, coming): (Vec<&QueueItem>, Vec<&QueueItem>) =
+            queue.next.iter().partition(|next| next.queued);
+        let options = |playing_track| LoadRequestOptions {
+            start_playing,
+            seek_to: position_ms,
+            context_options: context_options(shuffle, repeat),
+            playing_track: Some(playing_track),
+        };
+        let request = if queue.context_uri.is_empty() {
             // A list of tracks: the rest of it is what was coming up.
             let uris = std::iter::once(current)
-                .chain(
-                    queue
-                        .next
-                        .iter()
-                        .filter(|next| !next.queued)
-                        .map(|next| next.item),
-                )
+                .chain(coming.iter().map(|next| next.item))
                 .map(|item| item.uri())
                 .collect();
-            self.load_at(position_ms, |seek_to| {
-                LoadRequest::from_tracks(
-                    uris,
-                    LoadRequestOptions {
-                        start_playing,
-                        seek_to,
-                        context_options,
-                        playing_track: Some(PlayingTrack::Index(0)),
-                    },
-                )
-            })?;
+            LoadRequest::from_tracks(uris, options(PlayingTrack::Index(0)))
         } else {
-            let uri = queue.context_uri.to_string();
-            self.load_at(position_ms, |seek_to| {
-                LoadRequest::from_context_uri(
-                    uri,
-                    LoadRequestOptions {
-                        start_playing,
-                        seek_to,
-                        context_options,
-                        playing_track: Some(PlayingTrack::Uri(current.uri())),
-                    },
-                )
-            })?;
-        }
+            LoadRequest::from_context_uri(
+                queue.context_uri.to_string(),
+                options(PlayingTrack::Uri(current.uri())),
+            )
+        };
+        self.load_now(request)?;
         // The load cleared what the user had queued by hand.
-        for item in queued {
-            self.add_to_queue(item)?;
+        for next in queued {
+            self.add_to_queue(next.item)?;
         }
         Ok(())
     }
@@ -727,12 +731,7 @@ impl Engine {
     }
 
     pub fn seek(&self, position_ms: u32) -> Result<()> {
-        // Where play starts again, if Spotify took playback away.
-        let mut last = LastPlayed::shared(&self.last);
-        if !last.active {
-            last.position_ms = position_ms;
-        }
-        drop(last);
+        LastPlayed::shared(&self.last).seek(position_ms);
         Ok(self.spirc.set_position_ms(position_ms)?)
     }
 
@@ -741,8 +740,8 @@ impl Engine {
     }
 
     pub fn set_repeat(&self, repeat: Repeat) -> Result<()> {
-        self.spirc.repeat(repeat == Repeat::Context)?;
-        self.spirc.repeat_track(repeat == Repeat::Track)?;
+        self.spirc.repeat(repeat.repeats_context())?;
+        self.spirc.repeat_track(repeat.repeats_track())?;
         Ok(())
     }
 
@@ -817,16 +816,20 @@ impl Events {
                     self.closed = None;
                     return Some(Event::Disconnected);
                 }
-                event = self.player.recv() => match self.announce(self.activity(event?)) {
-                    // The queue is re-sent with every state update; most are unchanged.
-                    Some(Event::Queue(queue)) if self.queue.as_ref() == Some(&queue) => {}
-                    Some(Event::Queue(queue)) => {
-                        self.queue = Some(queue.clone());
-                        return Some(Event::Queue(queue));
+                event = self.player.recv() => {
+                    let event = event?;
+                    self.note_activity(&event);
+                    match self.announce(event) {
+                        // The queue is re-sent with every state update; most are unchanged.
+                        Some(Event::Queue(queue)) if self.queue.as_ref() == Some(&queue) => {}
+                        Some(Event::Queue(queue)) => {
+                            self.queue = Some(queue.clone());
+                            return Some(Event::Queue(queue));
+                        }
+                        Some(event) => return Some(event),
+                        None => {}
                     }
-                    Some(event) => return Some(event),
-                    None => {}
-                },
+                }
                 Some(update) = self.cluster.next() => {
                     if let Ok(update) = update {
                         return Some(self.connect(&update.cluster));
@@ -841,15 +844,13 @@ impl Events {
 impl Events {
     /// Notes whether this computer is the account's active device, which
     /// librespot reports only through these events.
-    fn activity(&self, event: PlayerEvent) -> PlayerEvent {
-        match event {
-            PlayerEvent::SessionConnected { .. } => LastPlayed::shared(&self.last).active = true,
-            PlayerEvent::SessionDisconnected { .. } => {
-                LastPlayed::shared(&self.last).active = false;
-            }
-            _ => {}
-        }
-        event
+    fn note_activity(&self, event: &PlayerEvent) {
+        let active = match event {
+            PlayerEvent::SessionConnected { .. } => true,
+            PlayerEvent::SessionDisconnected { .. } => false,
+            _ => return,
+        };
+        LastPlayed::shared(&self.last).active = active;
     }
 
     /// Converts a player event, first announcing the item it is about when
@@ -910,11 +911,9 @@ fn player_event(event: PlayerEvent) -> Option<Event> {
             Event::Volume(f32::from(volume) / f32::from(u16::MAX))
         }
         PlayerEvent::ShuffleChanged { shuffle } => Event::Shuffle(shuffle),
-        PlayerEvent::RepeatChanged { context, track } => Event::Repeat(match (track, context) {
-            (true, _) => Repeat::Track,
-            (false, true) => Repeat::Context,
-            (false, false) => Repeat::Off,
-        }),
+        PlayerEvent::RepeatChanged { context, track } => {
+            Event::Repeat(Repeat::from_flags(context, track))
+        }
         PlayerEvent::SetQueue {
             context_uri,
             current_track,
@@ -940,6 +939,14 @@ fn player_event(event: PlayerEvent) -> Option<Event> {
         }),
         _ => return None,
     })
+}
+
+fn context_options(shuffle: bool, repeat: Repeat) -> Option<LoadContextOptions> {
+    Some(LoadContextOptions::Options(Options {
+        shuffle,
+        repeat: repeat.repeats_context(),
+        repeat_track: repeat.repeats_track(),
+    }))
 }
 
 fn rejects_credentials(error: &librespot_core::Error) -> bool {
