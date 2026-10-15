@@ -11,6 +11,7 @@
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
 //!   cli idle-test [transfer]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play) starts it again where it was
+//!   cli settings-test [paused]     plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
@@ -66,6 +67,9 @@ async fn run() -> Fallible<()> {
     }
     if args.first() == Some(&"options-test") {
         return options_test(config).await;
+    }
+    if args.first() == Some(&"settings-test") {
+        return settings_test(config, args.get(1) == Some(&"paused")).await;
     }
     if args.first() == Some(&"idle-test") {
         return idle_test(config, args.get(1) == Some(&"transfer")).await;
@@ -904,6 +908,81 @@ async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
             println!("FAIL: played, but not where it stopped ({event:?}, same item: {same_item})")
         }
         None => println!("FAIL: play did nothing"),
+    }
+    Ok(())
+}
+
+async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {
+    // The app keeps its device id across sessions.
+    config.persistent_device = true;
+    config.normalise = true;
+    let (engine, mut events) = Engine::connect(config.clone()).await?;
+    engine.play_context(
+        &engine.liked_songs_uri(),
+        Start::Beginning,
+        false,
+        Repeat::Off,
+    )?;
+    let Some(Event::Item(item)) =
+        wait_for(&mut events, 30, |event| matches!(event, Event::Item(_))).await
+    else {
+        return Err("nothing started".into());
+    };
+    let Some(Event::Position(mut before)) = wait_for(
+        &mut events,
+        30,
+        |event| matches!(event, Event::Position(position_ms) if *position_ms > 8000),
+    )
+    .await
+    else {
+        return Err("the track didn't start".into());
+    };
+    if paused {
+        engine.pause()?;
+        let Some(Event::Playback(Playback { position_ms, .. })) =
+            wait_for(&mut events, 10, |event| {
+                matches!(event, Event::Playback(Playback { playing: false, .. }))
+            })
+            .await
+        else {
+            return Err("the track didn't pause".into());
+        };
+        before = position_ms;
+    }
+    let Some(left_off) = engine.left_off() else {
+        println!("FAIL: nothing to carry over");
+        return Ok(());
+    };
+    println!("-> at {before} ms ({left_off:?}); changing the volume level");
+    drop((engine, events));
+
+    config.volume_level = VolumeLevel::Loud;
+    let (engine, mut events) = Engine::connect(config).await?;
+    engine.pick_up(left_off)?;
+    let started = wait_for(&mut events, 20, |event| matches!(event, Event::Playback(_))).await;
+    let Some(Event::Playback(Playback {
+        playing,
+        position_ms,
+    })) = started
+    else {
+        println!("FAIL: nothing carried on");
+        return Ok(());
+    };
+    let near = position_ms + 1500 >= before && position_ms <= before + 2500;
+    let went_on = wait_for(&mut events, 8, |event| {
+        matches!(event, Event::Position(at) if *at > position_ms + 4000)
+            || matches!(event, Event::Stopped | Event::Playback(_))
+    })
+    .await;
+    let same_item = events_item(&mut events, item).await;
+    let kept_playing = matches!(went_on, Some(Event::Position(_)));
+    engine.pause()?;
+    if !near || !same_item || playing == paused || (!paused && !kept_playing) {
+        println!(
+            "FAIL: playing {playing} at {position_ms} ms, same item {same_item}, then {went_on:?}"
+        );
+    } else {
+        println!("PASS: {item:?} carried on at {position_ms} ms, playing {playing}");
     }
     Ok(())
 }

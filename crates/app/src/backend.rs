@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
-    Api, Config, Connect, Engine, Event, Playback, Queue, RemoteCommand, RemotePlay, Repeat,
-    Resume, Start,
+    Api, Config, Connect, Engine, Event, LeftOff, Playback, Queue, RemoteCommand, RemotePlay,
+    Repeat, Resume, Start,
     model::{Chapter, Id, Image, ItemRef, Kind, Lyrics, Progress, Saved, Track},
 };
 
@@ -227,8 +227,9 @@ enum Ended {
         /// When this computer was last seen playing, if it was at the end.
         playing: Option<SystemTime>,
     },
-    /// The user changed the configuration or signed out; reconnect at once.
-    Restart(Option<Config>),
+    /// The user changed the configuration or signed out; reconnect at once,
+    /// carrying on with what was playing, if anything should carry over.
+    Restart(Option<Config>, Option<LeftOff>),
 }
 
 /// Keeps a session alive until the UI goes away, reconnecting as needed.
@@ -239,6 +240,8 @@ async fn run(
 ) {
     // The session whose connection dropped, and when it was last seen playing.
     let mut lost: Option<(String, Option<SystemTime>)> = None;
+    // Playback to carry into the session a settings change starts.
+    let mut left_off: Option<LeftOff> = None;
     loop {
         if updates.send(Update::Connecting).is_err() {
             return;
@@ -256,6 +259,11 @@ async fn run(
             Ok((engine, mut events)) => {
                 // Only the first session after a drop takes playback back.
                 lost = None;
+                if let Some(left_off) = left_off.take()
+                    && let Err(error) = engine.pick_up(left_off)
+                {
+                    _ = updates.send(Update::Notice(error.to_string()));
+                }
                 let session = Session {
                     api: engine.api(),
                     liked_uri: engine.liked_songs_uri(),
@@ -272,7 +280,8 @@ async fn run(
                         session_id,
                         playing,
                     } => lost = Some((session_id, playing)),
-                    Ended::Restart(changed) => {
+                    Ended::Restart(changed, carried) => {
+                        left_off = carried;
                         if let Some(changed) = changed {
                             // Tools keep the sink they started with.
                             config = Config {
@@ -328,14 +337,14 @@ impl Session {
                     }
                     Some(Request::Configure(config)) => {
                         self.engine.save_progress().await;
-                        return Ended::Restart(Some(config));
+                        return Ended::Restart(Some(config), self.engine.left_off());
                     }
                     Some(Request::SignOut) => {
                         self.engine.save_progress().await;
                         // Keyring backends block.
                         _ = tokio::task::spawn_blocking(vivace_core::sign_out).await;
                         self.send(Update::SignedOut);
-                        return Ended::Restart(None);
+                        return Ended::Restart(None, None);
                     }
                     Some(request) => self.handle(request),
                     None => return Ended::Closed,

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use librespot_connect::{
@@ -200,6 +200,18 @@ pub enum Event {
     Disconnected,
 }
 
+/// Where this computer's playback stands, to carry it into a new session,
+/// such as the one a change of playback settings needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeftOff {
+    queue: Queue,
+    position_ms: u32,
+    shuffle: bool,
+    repeat: Repeat,
+    /// Playing, rather than paused.
+    pub playing: bool,
+}
+
 /// What this computer last played, so that [`Engine::play`] can start it
 /// again once Spotify has taken playback away from the device. Spotify does
 /// that by itself to a device left paused for a while; librespot then drops
@@ -212,6 +224,9 @@ struct LastPlayed {
     /// back something older than what the user listened to there.
     queue: Option<Queue>,
     position_ms: u32,
+    /// When `position_ms` was reported.
+    position_at: Option<Instant>,
+    playing: bool,
     shuffle: bool,
     repeat: Repeat,
 }
@@ -223,15 +238,41 @@ impl LastPlayed {
 
     fn remember(&mut self, event: &Event) {
         match event {
-            Event::Playback(Playback { position_ms, .. }) | Event::Position(position_ms) => {
+            Event::Playback(Playback {
+                playing,
+                position_ms,
+            }) => {
+                self.playing = *playing;
                 self.position_ms = *position_ms;
+                self.position_at = Some(Instant::now());
             }
+            Event::Position(position_ms) => {
+                self.position_ms = *position_ms;
+                self.position_at = Some(Instant::now());
+            }
+            Event::Stopped => self.playing = false,
             Event::Shuffle(shuffle) => self.shuffle = *shuffle,
             Event::Repeat(repeat) => self.repeat = *repeat,
             Event::Queue(queue) if queue.current.is_some() => self.queue = Some(queue.clone()),
             Event::Connect(connect) if connect.remote.is_some() => self.queue = None,
             _ => {}
         }
+    }
+
+    fn left_off(&self) -> Option<LeftOff> {
+        let playing = self.active && self.playing;
+        // Positions come every second; playback went on since the last one.
+        let since = match self.position_at {
+            Some(at) if playing => at.elapsed().min(Duration::from_secs(1)),
+            _ => Duration::ZERO,
+        };
+        Some(LeftOff {
+            queue: self.queue.clone().filter(|queue| queue.current.is_some())?,
+            position_ms: self.position_ms + since.as_millis() as u32,
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+            playing,
+        })
     }
 }
 
@@ -508,22 +549,59 @@ impl Engine {
     /// `false` if there is nothing to start, or the device still has its
     /// playback.
     fn play_again(&self, start_playing: bool) -> Result<bool> {
-        let (queue, position_ms, shuffle, repeat) = {
+        let left_off = {
             let mut last = LastPlayed::shared(&self.last);
             if last.active {
                 return Ok(false);
             }
-            let Some(queue) = last.queue.clone() else {
+            let Some(left_off) = last.left_off() else {
                 return Ok(false);
             };
             // A second press before the load lands must not load again.
             last.active = true;
-            (queue, last.position_ms, last.shuffle, last.repeat)
-        };
-        let Some(current) = queue.current else {
-            return Ok(false);
+            left_off
         };
         log::info!("playback was taken away from this device; starting it again");
+        self.start_from(left_off, start_playing)?;
+        Ok(true)
+    }
+
+    /// Where this computer's playback stands, if it has any, for
+    /// [`Engine::pick_up`] in the next session.
+    pub fn left_off(&self) -> Option<LeftOff> {
+        LastPlayed::shared(&self.last).left_off()
+    }
+
+    /// Carries on with what a previous session left off, playing or paused
+    /// as it was.
+    pub fn pick_up(&self, left_off: LeftOff) -> Result<()> {
+        {
+            // Known at once, should another session follow before the
+            // player reports anything.
+            let mut last = LastPlayed::shared(&self.last);
+            last.active = true;
+            last.queue = Some(left_off.queue.clone());
+            last.position_ms = left_off.position_ms;
+            last.position_at = Some(Instant::now());
+            last.playing = left_off.playing;
+            last.shuffle = left_off.shuffle;
+            last.repeat = left_off.repeat;
+        }
+        let playing = left_off.playing;
+        self.start_from(left_off, playing)
+    }
+
+    fn start_from(&self, left_off: LeftOff, start_playing: bool) -> Result<()> {
+        let LeftOff {
+            queue,
+            position_ms,
+            shuffle,
+            repeat,
+            ..
+        } = left_off;
+        let Some(current) = queue.current else {
+            return Ok(());
+        };
         let context_options = Some(LoadContextOptions::Options(Options {
             shuffle,
             repeat: repeat == Repeat::Context,
@@ -575,7 +653,7 @@ impl Engine {
         for item in queued {
             self.add_to_queue(item)?;
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Records where the playing episode is, for closing the app.
