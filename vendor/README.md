@@ -59,6 +59,13 @@ Local changes, marked `vivace:` in `src/spirc.rs`, `src/state.rs` and
    beginning; an empty uid instead stopped a sleeping Echo that woke for the
    transfer.
 
+9. `SpircTask::handle_command` sends the request that takes playback to this
+   device ("this computer") on a task of its own. Spotify answers it only
+   after this device has handled the transfer it sends back, and awaiting it
+   inside the loop kept that transfer from being handled: Spotify gave up
+   after about three seconds, closed the device's connection ("Remote sent
+   after having closed"), and the switch failed or limped through late.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.

@@ -8,6 +8,7 @@
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
+//!   cli pull-test [seconds]     waits, then takes playback here as choosing this computer does, and prints what follows
 //!   cli speaker-test <device id> [idle|play|next|context=<uri>|paused-context=<uri>]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
@@ -248,6 +249,16 @@ async fn run() -> Fallible<()> {
         ["remote-volume", device, volume] => {
             api.remote_volume(device, volume.parse()?).await?;
             println!("set {device} to {volume}");
+        }
+        ["pull-test", rest @ ..] => {
+            // Takes playback here as choosing this computer does, after
+            // `seconds`, and prints what follows.
+            let seconds = rest.first().map_or(Ok(3), |seconds| seconds.parse())?;
+            let mut connect = None;
+            watch_connect(&mut events, &mut connect, seconds).await;
+            println!("-> choosing this computer");
+            engine.transfer_here()?;
+            watch_connect(&mut events, &mut connect, 15).await;
         }
         ["transfer", device] => {
             api.transfer(device).await?;
@@ -1142,9 +1153,10 @@ async fn watch(engine: &Engine, events: &mut Events, seconds: u64, skip: bool) -
                 Some(Event::Connect(connect)) => {
                     for device in &connect.devices {
                         println!(
-                            "device: {} ({:?}){}{}",
+                            "device: {} ({:?}) {}{}{}",
                             device.name,
                             device.kind,
+                            device.id,
                             if device.is_active { " [active]" } else { "" },
                             if device.is_local { " [this computer]" } else { "" },
                         );

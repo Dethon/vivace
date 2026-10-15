@@ -740,11 +740,22 @@ impl SpircTask {
                 }
             }
             SpircCommand::Transfer(request) if !self.connect_state.is_active() => {
-                let device_id = self.session.device_id();
-                self.session
-                    .spclient()
-                    .transfer(device_id, device_id, request.as_ref())
-                    .await?;
+                // vivace: sent on its own. Spotify answers the request only
+                // once this device has handled the transfer it sends back, and
+                // awaiting it here kept this loop from handling it: Spotify
+                // gave up after about three seconds, closed the connection and
+                // left playback paused where it was.
+                let session = self.session.clone();
+                tokio::spawn(async move {
+                    let device_id = session.device_id();
+                    if let Err(why) = session
+                        .spclient()
+                        .transfer(device_id, device_id, request.as_ref())
+                        .await
+                    {
+                        error!("transferring playback here failed: {why}");
+                    }
+                });
                 return Ok(());
             }
             SpircCommand::Activate if !self.connect_state.is_active() => {
