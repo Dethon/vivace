@@ -1,6 +1,5 @@
 //! The engine's thread: owns the session and answers the UI's requests.
 
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -288,9 +287,7 @@ async fn run(
                     engine,
                     updates: updates.clone(),
                     queue_sequence: 0,
-                    remote: None,
-                    last_remote: None,
-                    resumed: RefCell::default(),
+                    remote: RemoteControl::default(),
                     commands: Arc::default(),
                     remote_track: None,
                 };
@@ -329,13 +326,7 @@ struct Session {
     liked_uri: String,
     updates: UnboundedSender<Update>,
     queue_sequence: u64,
-    /// The device that is playing, when it is not this computer.
-    remote: Option<Box<str>>,
-    /// The other device that played last, kept while no device is active:
-    /// one can drop out for a moment, and the controls still mean it.
-    last_remote: Option<Box<str>>,
-    /// The other device last resumed from here, and when.
-    resumed: RefCell<Option<(Box<str>, Instant)>>,
+    remote: RemoteControl,
     /// Counts the commands sent to other devices, so that a slow recovery
     /// gives way to whatever the user pressed since.
     commands: Arc<AtomicU64>,
@@ -396,16 +387,13 @@ impl Session {
 
     /// Sends a transport command to whichever device is playing.
     fn transport(
-        &self,
+        &mut self,
         remote: RemoteCommand,
         local: impl FnOnce(&Engine) -> vivace_core::Result<()>,
     ) -> vivace_core::Result<()> {
-        let Some(device) = self.remote.clone().or_else(|| self.last_remote.clone()) else {
+        let Some(device) = self.remote.transport_target(remote, Instant::now()) else {
             return local(&self.engine);
         };
-        if remote == RemoteCommand::Resume {
-            self.resumed.replace(Some((device.clone(), Instant::now())));
-        }
         self.command_remote(device, remote);
         Ok(())
     }
@@ -428,7 +416,7 @@ impl Session {
         });
     }
 
-    fn handle(&self, request: Request) {
+    fn handle(&mut self, request: Request) {
         let result = match request {
             // These end the session and are taken by `serve` before this.
             Request::Configure(_) | Request::SignOut | Request::Quit => Ok(()),
@@ -602,7 +590,7 @@ impl Session {
                 start,
                 shuffle,
                 repeat,
-            } => match self.remote.clone() {
+            } => match self.remote.playing.clone() {
                 // Playback stays on whichever device has it, as in Spotify's apps.
                 Some(device) => {
                     self.spawn(move |api, _| async move {
@@ -618,7 +606,7 @@ impl Session {
                 tracks,
                 index,
                 repeat,
-            } => match self.remote.clone() {
+            } => match self.remote.playing.clone() {
                 Some(device) => {
                     self.spawn(move |api, _| async move {
                         let play = RemotePlay::Tracks {
@@ -644,7 +632,7 @@ impl Session {
                 .transport(RemoteCommand::Shuffle(shuffle), |engine| {
                     engine.set_shuffle(shuffle)
                 }),
-            Request::Repeat(repeat) => match self.remote.clone() {
+            Request::Repeat(repeat) => match self.remote.playing.clone() {
                 Some(device) => {
                     self.spawn(move |api, _| async move {
                         let context = RemoteCommand::RepeatContext(repeat.repeats_context());
@@ -660,7 +648,7 @@ impl Session {
                 None => self.engine.set_repeat(repeat),
             },
             Request::Volume(volume) => {
-                match self.remote.clone() {
+                match self.remote.playing.clone() {
                     Some(device) => self.spawn(move |api, _| async move {
                         let result = api.remote_volume(&device, volume).await;
                         result.err().map(|error| Update::Notice(error.to_string()))
@@ -669,7 +657,7 @@ impl Session {
                 }
                 Ok(())
             }
-            Request::AddToQueue(track) => match self.remote.clone() {
+            Request::AddToQueue(track) => match self.remote.playing.clone() {
                 Some(device) => {
                     self.spawn(move |api, _| async move {
                         match api.remote_queue(&device, track).await {
@@ -724,16 +712,7 @@ impl Session {
     }
 
     fn connect_changed(&mut self, connect: Connect) {
-        self.remote = connect.remote.as_ref().map(|remote| remote.device.clone());
-        if self.remote.is_some() {
-            self.last_remote = self.remote.clone();
-        } else if connect.devices.iter().any(|device| device.is_active) {
-            // This computer plays.
-            self.last_remote = None;
-        } else if let Some((device, at)) = self.resumed.take()
-            && at.elapsed() < RESUME_DROPOUT
-            && self.last_remote.as_ref() == Some(&device)
-        {
+        if let Some(device) = self.remote.follow(&connect, Instant::now()) {
             log::info!("{device} dropped out after being resumed; resuming it again");
             self.command_remote(device, RemoteCommand::Resume);
         }
@@ -791,6 +770,47 @@ impl Session {
 
     fn send(&self, update: Update) {
         _ = self.updates.send(update);
+    }
+}
+
+/// Which other device the player's controls command.
+#[derive(Default)]
+struct RemoteControl {
+    /// The device that is playing, when it is not this computer.
+    playing: Option<Box<str>>,
+    /// The other device that played last, kept while no device is active:
+    /// one can drop out for a moment, and the controls still mean it.
+    last: Option<Box<str>>,
+    /// The other device last resumed from here, and when.
+    resumed: Option<(Box<str>, Instant)>,
+}
+
+impl RemoteControl {
+    /// The device a transport command goes to; `None` for this computer.
+    fn transport_target(&mut self, command: RemoteCommand, now: Instant) -> Option<Box<str>> {
+        let device = self.playing.clone().or_else(|| self.last.clone())?;
+        if command == RemoteCommand::Resume {
+            self.resumed = Some((device.clone(), now));
+        }
+        Some(device)
+    }
+
+    /// Follows a change in the account's playback, and returns the device
+    /// to resume again when it dropped out just after being resumed.
+    fn follow(&mut self, connect: &Connect, now: Instant) -> Option<Box<str>> {
+        self.playing = connect.remote.as_ref().map(|remote| remote.device.clone());
+        if self.playing.is_some() {
+            self.last = self.playing.clone();
+        } else if connect.devices.iter().any(|device| device.is_active) {
+            // This computer plays.
+            self.last = None;
+        } else if let Some((device, at)) = self.resumed.take()
+            && now.duration_since(at) < RESUME_DROPOUT
+            && self.last.as_ref() == Some(&device)
+        {
+            return Some(device);
+        }
+        None
     }
 }
 
@@ -872,5 +892,104 @@ async fn available_episodes(api: &Api, saved: &[Saved]) -> Vec<Id> {
             log::warn!("couldn't look up saved episodes: {error}");
             saved.iter().map(|saved| saved.id).collect()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use vivace_core::{Device, DeviceKind, Remote};
+
+    use super::*;
+
+    const SPEAKER: &str = "speaker";
+
+    fn playing_on(device: &str) -> Connect {
+        Connect {
+            devices: Vec::new(),
+            remote: Some(Remote {
+                device: device.into(),
+                queue: Queue::default(),
+                playing: true,
+                position_ms: 0,
+                duration_ms: 0,
+                shuffle: false,
+                repeat: Repeat::Off,
+                volume: 1.0,
+            }),
+        }
+    }
+
+    fn playing_here() -> Connect {
+        Connect {
+            devices: vec![Device {
+                id: "here".into(),
+                name: "This computer".into(),
+                kind: DeviceKind::Computer,
+                is_active: true,
+                is_local: true,
+            }],
+            remote: None,
+        }
+    }
+
+    /// A speaker played, was resumed at `start`, and the account then said
+    /// nothing was active.
+    fn resumed_then_dropped(after: Duration) -> Option<Box<str>> {
+        let start = Instant::now();
+        let mut remote = RemoteControl::default();
+        remote.follow(&playing_on(SPEAKER), start);
+        remote.transport_target(RemoteCommand::Resume, start);
+        remote.follow(&playing_on(SPEAKER), start);
+        remote.follow(&Connect::default(), start + after)
+    }
+
+    #[test]
+    fn controls_keep_commanding_a_speaker_that_dropped_out() {
+        let now = Instant::now();
+        let mut remote = RemoteControl::default();
+        assert_eq!(remote.transport_target(RemoteCommand::Pause, now), None);
+        remote.follow(&playing_on(SPEAKER), now);
+        remote.follow(&Connect::default(), now);
+        assert_eq!(
+            remote
+                .transport_target(RemoteCommand::Pause, now)
+                .as_deref(),
+            Some(SPEAKER)
+        );
+        remote.follow(&playing_here(), now);
+        assert_eq!(remote.transport_target(RemoteCommand::Pause, now), None);
+    }
+
+    #[test]
+    fn a_speaker_that_drops_out_just_after_resuming_is_resumed_again() {
+        assert_eq!(
+            resumed_then_dropped(Duration::from_secs(1)).as_deref(),
+            Some(SPEAKER)
+        );
+    }
+
+    #[test]
+    fn a_speaker_that_drops_out_later_is_left_alone() {
+        assert_eq!(resumed_then_dropped(RESUME_DROPOUT), None);
+    }
+
+    #[test]
+    fn a_speaker_is_resumed_again_only_once() {
+        let start = Instant::now();
+        let mut remote = RemoteControl::default();
+        remote.follow(&playing_on(SPEAKER), start);
+        remote.transport_target(RemoteCommand::Resume, start);
+        assert!(remote.follow(&Connect::default(), start).is_some());
+        assert_eq!(remote.follow(&Connect::default(), start), None);
+    }
+
+    #[test]
+    fn only_the_speaker_that_was_resumed_is_resumed_again() {
+        let start = Instant::now();
+        let mut remote = RemoteControl::default();
+        remote.follow(&playing_on(SPEAKER), start);
+        remote.transport_target(RemoteCommand::Resume, start);
+        remote.follow(&playing_on("other"), start);
+        assert_eq!(remote.follow(&Connect::default(), start), None);
     }
 }
