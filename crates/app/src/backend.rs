@@ -241,6 +241,9 @@ struct Lost {
     session_id: String,
     /// When this computer was last seen playing, if it still was then.
     playing_at: Option<SystemTime>,
+    /// Where its playback stood, to start it again should Spotify no
+    /// longer have it.
+    left_off: Option<LeftOff>,
 }
 
 impl Lost {
@@ -253,6 +256,7 @@ impl Lost {
                 at.elapsed()
                     .is_ok_and(|elapsed| elapsed < RESUME_PLAYING_WITHIN)
             }),
+            left_off: self.left_off.clone(),
         }
     }
 }
@@ -377,6 +381,7 @@ impl Session {
                         return Ended::Lost(Lost {
                             session_id: self.engine.session_id(),
                             playing_at: self.engine.playing_at(),
+                            left_off: self.engine.left_off(),
                         });
                     }
                     Some(event) => self.forward(event),

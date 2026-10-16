@@ -29,6 +29,9 @@ use crate::{
 const CLUSTER_UPDATES: &str = "hm://connect-state/v1/cluster";
 const DEFAULT_VOLUME: u16 = u16::MAX / 2;
 const VOLUME_SETTLE: Duration = Duration::from_millis(300);
+// How often a session is checked for a dropped connection that librespot
+// has not noticed yet.
+const SESSION_CHECK: Duration = Duration::from_secs(5);
 /// How long closing waits for the last episode position to be recorded.
 const FINAL_SAVE_TIMEOUT: Duration = Duration::from_secs(2);
 // Context librespot gives a list of tracks loaded without one.
@@ -112,6 +115,10 @@ pub struct Resume {
     pub session_id: String,
     /// Play at once, rather than wait paused where playback stopped.
     pub play: bool,
+    /// Where the dropped session's playback stood, for [`Engine::play`] to
+    /// start it again should Spotify no longer have it by the time the
+    /// connection is back, as after hours paused.
+    pub left_off: Option<LeftOff>,
 }
 
 impl Config {
@@ -302,6 +309,14 @@ impl LastPlayed {
         };
     }
 
+    /// Knows where a dropped session left off, without taking playback:
+    /// the new session has it only if Spotify gives it back.
+    fn carry(&mut self, left_off: &LeftOff) {
+        self.restore(left_off);
+        self.active = false;
+        self.playing_at = None;
+    }
+
     /// Where play starts again, if Spotify took playback away.
     fn seek(&mut self, position_ms: u32) {
         if !self.active {
@@ -446,8 +461,24 @@ impl Engine {
         tokio::task::spawn_blocking(auth::protect_credentials);
 
         let (closed_tx, closed) = oneshot::channel();
+        let (watched, stopping) = (session.clone(), spirc.clone());
         tokio::spawn(async move {
-            task.await;
+            tokio::pin!(task);
+            let mut checks = tokio::time::interval(SESSION_CHECK);
+            loop {
+                tokio::select! {
+                    () = &mut task => break,
+                    _ = checks.tick() => {
+                        // Spirc looks at the session only once something
+                        // wakes it, which nothing does for as long as the
+                        // device sits paused or inactive; it would hold on
+                        // to a dead session, ignoring play, for hours.
+                        if watched.is_invalid() {
+                            _ = stopping.shutdown();
+                        }
+                    }
+                }
+            }
             // The receiver is gone when the engine was dropped first.
             _ = closed_tx.send(());
         });
@@ -459,6 +490,13 @@ impl Engine {
             start_positions,
         );
         let last = Arc::<Mutex<LastPlayed>>::default();
+        if let Some(left_off) = config
+            .resume
+            .as_ref()
+            .and_then(|resume| resume.left_off.as_ref())
+        {
+            LastPlayed::shared(&last).carry(left_off);
+        }
         let events = Events {
             player: player.get_player_event_channel(),
             cluster,

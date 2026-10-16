@@ -13,8 +13,8 @@
 //!   cli pull-test [seconds]     waits, then takes playback here as choosing this computer does, and prints what follows
 //!   cli speaker-test <device id> [idle|play|next|context=<uri>|paused-context=<uri>]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
-//!   cli drop-test [episode id]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on
-//!   cli idle-test [transfer]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play) starts it again where it was
+//!   cli drop-test [episode id|paused]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on (or, paused, that play starts it again where it stopped)
+//!   cli idle-test [transfer|drop]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play; or, once a dropped connection is back, play) starts it again where it was
 //!   cli settings-test [paused]     plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
@@ -78,13 +78,16 @@ async fn run() -> Fallible<()> {
         return settings_test(config, args.get(1) == Some(&"paused")).await;
     }
     if args.first() == Some(&"idle-test") {
-        return idle_test(config, args.get(1) == Some(&"transfer")).await;
+        return idle_test(config, args.get(1).copied()).await;
     }
     if let ["speaker-test", device, rest @ ..] = args.as_slice() {
         return speaker_test(config, device, rest.first().copied()).await;
     }
     if args.first() == Some(&"drop-test") {
-        return drop_test(config, args.get(1).copied()).await;
+        return match args.get(1) {
+            Some(&"paused") => drop_paused_test(config).await,
+            episode => drop_test(config, episode.copied()).await,
+        };
     }
 
     let started = Instant::now();
@@ -855,6 +858,7 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
     config.resume = Some(Resume {
         session_id: engine.session_id(),
         play: engine.playing_at().is_some(),
+        left_off: engine.left_off(),
     });
     drop((engine, events));
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -867,6 +871,58 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
     match resumed {
         Some(event) => println!("PASS: playback carried on by itself ({event:?})"),
         None => println!("FAIL: playback didn't carry on after the reconnect"),
+    }
+    Ok(())
+}
+
+/// Plays Liked Songs, pauses, and drops the connection while paused, which
+/// nothing on the device notices by itself. Once reconnected as the app
+/// does, play must start it again where it stopped.
+async fn drop_paused_test(mut config: Config) -> Fallible<()> {
+    // The app keeps its device id across reconnects.
+    config.persistent_device = true;
+    let (engine, mut events) = Engine::connect(config.clone()).await?;
+    play_liked(&engine)?;
+    let item = started(&mut events).await?;
+    playing_past(&mut events, 8000).await?;
+    let paused_at = pause(&engine, &mut events).await?;
+    println!("-> paused {item:?} at {paused_at} ms; dropping the connection");
+    engine.drop_connection();
+    if wait_for(&mut events, 20, |event| *event == Event::Disconnected)
+        .await
+        .is_none()
+    {
+        println!("FAIL: the dropped connection went unnoticed");
+        return Ok(());
+    }
+    config.resume = Some(Resume {
+        session_id: engine.session_id(),
+        play: false,
+        left_off: engine.left_off(),
+    });
+    drop((engine, events));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let (engine, mut events) = Engine::connect(config).await?;
+    println!("-> reconnected; play");
+    wait_for(&mut events, 3, |_| false).await;
+    engine.play()?;
+    let resumed = wait_for(&mut events, 20, |event| {
+        matches!(event, Event::Playback(Playback { playing: true, .. }))
+    })
+    .await;
+    let same_item = events_item(&mut events, item).await;
+    engine.pause()?;
+    match resumed {
+        Some(Event::Playback(Playback { position_ms, .. }))
+            if near(position_ms, paused_at, 3000) && same_item =>
+        {
+            println!("PASS: {item:?} started again at {position_ms} ms")
+        }
+        Some(event) => {
+            println!("FAIL: played, but not where it stopped ({event:?}, same item: {same_item})")
+        }
+        None => println!("FAIL: play did nothing"),
     }
     Ok(())
 }
@@ -964,8 +1020,10 @@ async fn watch_connect(events: &mut Events, connect: &mut Option<Connect>, secon
     }
 }
 
-async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
-    let (engine, mut events) = Engine::connect(config).await?;
+async fn idle_test(mut config: Config, mode: Option<&str>) -> Fallible<()> {
+    // The app keeps its device id across reconnects.
+    config.persistent_device = true;
+    let (mut engine, mut events) = Engine::connect(config.clone()).await?;
     play_liked(&engine)?;
     let item = started(&mut events).await?;
     playing_past(&mut events, 8000).await?;
@@ -974,7 +1032,34 @@ async fn idle_test(config: Config, transfer: bool) -> Fallible<()> {
     engine.lose_playback()?;
     wait_for(&mut events, 3, |_| false).await;
 
-    if transfer {
+    if mode == Some("drop") {
+        println!("-> dropping the connection");
+        engine.drop_connection();
+        if wait_for(&mut events, 20, |event| *event == Event::Disconnected)
+            .await
+            .is_none()
+        {
+            return Err("the session didn't end".into());
+        }
+        // Spotify forgets a paused session's state within hours; an id
+        // that names no session stands for that.
+        config.resume = Some(Resume {
+            session_id: "forgotten".into(),
+            play: false,
+            left_off: engine.left_off(),
+        });
+        drop((engine, events));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        (engine, events) = Engine::connect(config).await?;
+        let mut connect = None;
+        watch_connect(&mut events, &mut connect, 3).await;
+        if connect.is_some_and(|connect| connect.devices.iter().any(|device| device.is_active)) {
+            println!("SKIP: the account still has playback, so play has it anyway");
+            return Ok(());
+        }
+        println!("-> reconnected with nothing active");
+    }
+    if mode == Some("transfer") {
         println!("-> choose this computer");
         engine.transfer_here()?;
         let taken = wait_for(&mut events, 20, |event| {
