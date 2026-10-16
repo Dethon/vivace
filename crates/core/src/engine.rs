@@ -12,8 +12,8 @@ use librespot_core::{
     config::DeviceType, dealer::protocol::Message, error::ErrorKind,
 };
 use librespot_playback::{
-    audio_backend::{self, Sink},
-    config::{AudioFormat, Bitrate, PlayerConfig, VolumeCtrl},
+    audio_backend::Sink,
+    config::{Bitrate, PlayerConfig, VolumeCtrl},
     mixer::{self, Mixer, MixerConfig},
     player::{Player, PlayerEvent, PlayerEventChannel},
 };
@@ -21,7 +21,7 @@ use librespot_protocol::connect::{Cluster, ClusterUpdate};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
-    Api, Connect, Result, auth,
+    Api, Connect, Output, Result, auth,
     model::{Id, ItemRef, Kind},
     progress::{self, Recorder, StartPositions},
 };
@@ -346,10 +346,7 @@ impl Engine {
     pub async fn connect(config: Config) -> Result<(Self, Events)> {
         let sink = match config.sink.clone() {
             Some(sink) => sink,
-            None => {
-                let backend = audio_backend::find(None).ok_or(crate::Error::NoAudioBackend)?;
-                Arc::new(move || backend(None, AudioFormat::default()))
-            }
+            None => Arc::new(|| -> Box<dyn Sink> { Box::new(Output::default()) }),
         };
 
         let cache = auth::cache()?;

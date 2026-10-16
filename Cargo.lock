@@ -7463,6 +7463,7 @@ name = "vivace-core"
 version = "0.3.11"
 dependencies = [
  "bytes",
+ "cpal",
  "dirs",
  "env_logger",
  "futures-util",
@@ -7480,6 +7481,7 @@ dependencies = [
  "memory-stats",
  "prost",
  "protobuf",
+ "rodio",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

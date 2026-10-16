@@ -5,6 +5,7 @@ mod auth;
 mod connect;
 mod engine;
 pub mod model;
+mod output;
 mod progress;
 
 use std::time::Duration;
@@ -16,6 +17,7 @@ pub use engine::{
     Config, Engine, Event, Events, LeftOff, Playback, Quality, Queue, QueueItem, Repeat, Resume,
     SinkFactory, Start, VolumeLevel,
 };
+pub use output::Output;
 
 // Tokio reads this when a runtime is built without an explicit size.
 const WORKER_THREADS_VARIABLE: &str = "TOKIO_WORKER_THREADS";

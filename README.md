@@ -63,7 +63,9 @@ installer's side panel.
 ## Layout
 
 - `crates/core`: sign-in, playback, Spotify Connect and catalogue access,
-  with no user interface. `examples/cli.rs` exercises it against an account.
+  with no user interface. `examples/cli.rs` exercises it against an account;
+  `scripts/device-loss.sh` checks that audio survives its output device
+  going away (Linux, needs `pulseaudio`).
 - `crates/app`: the Slint interface. `examples/live.rs` drives the real app
   headless and saves a screenshot per step; `examples/snapshot.rs` renders
   it with fixture data.
