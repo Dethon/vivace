@@ -7,6 +7,7 @@
 //! `SNAPSHOT_RIGHT_CLICK=x,y` click at that point first, e.g. to open a popup;
 //! `SNAPSHOT_HOVER=x,y` wiggles the pointer there to show hover state.
 //! `SNAPSHOT_CHAPTERS=1` gives the playing item chapter marks.
+//! `SNAPSHOT_LONG_TITLE=1` gives it a long title and artist list.
 //! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
 
 use std::rc::Rc;
@@ -226,8 +227,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let player = ui.global::<Player>();
     player.set_available(true);
-    player.set_title("Instant Crush (feat. Julian Casablancas)".into());
-    player.set_artists("Daft Punk, Julian Casablancas".into());
+    if std::env::var_os("SNAPSHOT_LONG_TITLE").is_some() {
+        player.set_title("Hazbin Guarantee (Trust Us) - From the Prime Original Series".into());
+        player.set_artists(
+            "Hazbin Hotel, Erika Henningsen, Christian Borle, Joel Perez, Lilli Cooper, \
+             Stephanie Beatriz, Keith David, Amir Talai"
+                .into(),
+        );
+    } else {
+        player.set_title("Instant Crush (feat. Julian Casablancas)".into());
+        player.set_artists("Daft Punk, Julian Casablancas".into());
+    }
     player.set_cover(cover(3, 56));
     player.set_playing(true);
     player.set_liked(true);

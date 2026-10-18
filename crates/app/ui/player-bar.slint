@@ -53,325 +53,330 @@ component DeviceRow inherits Rectangle {
 }
 
 export component PlayerBar inherits Rectangle {
+    // The width of each side column, as Spotify shares it out: 30 % each,
+    // and whatever the controls leave beyond their 720px. Fixed rather than
+    // left to a layout, so a long title elides instead of squeezing the
+    // controls and pushing the volume off the window. The columns are placed
+    // by hand: in a layout, their widths would feed back into the window's.
+    property <length> side-width: max((self.width - 64px) * 0.3, (self.width - 64px - 720px) / 2);
+    // The right column holds its buttons and the volume slider; in a narrow
+    // window the title gives way first, down to a little text.
+    property <length> right-width: max(self.side-width, 240px);
+    property <length> left-width: max(140px, min(self.side-width, self.width - 64px - 300px - self.right-width));
+
     height: 80px;
 
+    // Now playing.
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        spacing: 16px;
+        x: 16px;
+        width: root.left-width;
+        spacing: 12px;
 
-        // Now playing.
+        VerticalLayout {
+            alignment: center;
+
+            Cover {
+                source: Player.cover;
+                size: 56px;
+                opacity: Player.available ? 1 : 0;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 0;
+
+            Text {
+                text: Player.title;
+                color: title-touch.has-hover ? Theme.accent-hover : Theme.text;
+                font-size: 14px;
+                overflow: elide;
+
+                title-touch := TouchArea {
+                    width: min(parent.width, parent.preferred-width);
+                    x: 0;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Player.open-album();
+                    }
+                }
+            }
+
+            Text {
+                text: Player.artists;
+                color: artist-touch.has-hover ? Theme.text : Theme.text-muted;
+                font-size: 12px;
+                overflow: elide;
+
+                artist-touch := TouchArea {
+                    width: min(parent.width, parent.preferred-width);
+                    x: 0;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Player.open-artist();
+                    }
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            if Player.available: IconButton {
+                icon: Player.episode
+                    ? (Player.liked ? Icons.check-circle : Icons.add-circle)
+                    : (Player.liked ? Icons.heart : Icons.heart-outline);
+                icon-size: 18px;
+                active: Player.liked;
+                clicked => {
+                    Player.toggle-liked();
+                }
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+
+    // Transport controls and progress.
+    VerticalLayout {
+        x: 32px + root.left-width;
+        width: root.width - 64px - root.left-width - root.right-width;
+        alignment: center;
+        spacing: 4px;
+
         HorizontalLayout {
-            horizontal-stretch: 3;
-            min-width: 180px;
+            alignment: center;
             spacing: 12px;
 
-            VerticalLayout {
-                alignment: center;
-
-                Cover {
-                    source: Player.cover;
-                    size: 56px;
-                    opacity: Player.available ? 1 : 0;
+            IconButton {
+                icon: Icons.shuffle;
+                icon-size: 18px;
+                active: Player.shuffle;
+                clicked => {
+                    Player.toggle-shuffle();
                 }
             }
 
-            VerticalLayout {
-                alignment: center;
-                spacing: 3px;
-                horizontal-stretch: 0;
-
-                Text {
-                    text: Player.title;
-                    color: title-touch.has-hover ? Theme.accent-hover : Theme.text;
-                    font-size: 14px;
-                    overflow: elide;
-
-                    title-touch := TouchArea {
-                        width: min(parent.width, parent.preferred-width);
-                        x: 0;
-                        mouse-cursor: pointer;
-                        clicked => {
-                            Player.open-album();
-                        }
-                    }
-                }
-
-                Text {
-                    text: Player.artists;
-                    color: artist-touch.has-hover ? Theme.text : Theme.text-muted;
-                    font-size: 12px;
-                    overflow: elide;
-
-                    artist-touch := TouchArea {
-                        width: min(parent.width, parent.preferred-width);
-                        x: 0;
-                        mouse-cursor: pointer;
-                        clicked => {
-                            Player.open-artist();
-                        }
-                    }
+            IconButton {
+                icon: Icons.rewind-15;
+                icon-size: 20px;
+                enabled: Player.available;
+                clicked => {
+                    Player.seek(max(Player.position-ms - 15000, 0));
                 }
             }
 
-            VerticalLayout {
-                alignment: center;
-
-                if Player.available: IconButton {
-                    icon: Player.episode
-                        ? (Player.liked ? Icons.check-circle : Icons.add-circle)
-                        : (Player.liked ? Icons.heart : Icons.heart-outline);
-                    icon-size: 18px;
-                    active: Player.liked;
-                    clicked => {
-                        Player.toggle-liked();
-                    }
+            IconButton {
+                icon: Icons.previous;
+                icon-size: 24px;
+                enabled: Player.available;
+                clicked => {
+                    Player.previous();
                 }
             }
 
             Rectangle {
-                horizontal-stretch: 1;
+                width: 36px;
+                height: 36px;
+                border-radius: 18px;
+                background: toggle.has-hover ? Theme.accent-hover : Theme.text;
+                opacity: Player.available ? 1 : 0.35;
+
+                Icon {
+                    path: Player.playing ? Icons.pause : Icons.play;
+                    size: 22px;
+                    tint: Theme.on-accent;
+                }
+
+                toggle := TouchArea {
+                    enabled: Player.available;
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Player.toggle();
+                    }
+                }
             }
-        }
 
-        // Transport controls and progress.
-        VerticalLayout {
-            horizontal-stretch: 4;
-            max-width: 720px;
-            alignment: center;
-            spacing: 4px;
-
-            HorizontalLayout {
-                alignment: center;
-                spacing: 12px;
-
-                IconButton {
-                    icon: Icons.shuffle;
-                    icon-size: 18px;
-                    active: Player.shuffle;
-                    clicked => {
-                        Player.toggle-shuffle();
-                    }
+            IconButton {
+                icon: Icons.next;
+                icon-size: 24px;
+                enabled: Player.available;
+                clicked => {
+                    Player.next();
                 }
+            }
 
-                IconButton {
-                    icon: Icons.rewind-15;
-                    icon-size: 20px;
-                    enabled: Player.available;
-                    clicked => {
-                        Player.seek(max(Player.position-ms - 15000, 0));
-                    }
-                }
-
-                IconButton {
-                    icon: Icons.previous;
-                    icon-size: 24px;
-                    enabled: Player.available;
-                    clicked => {
-                        Player.previous();
-                    }
-                }
-
-                Rectangle {
-                    width: 36px;
-                    height: 36px;
-                    border-radius: 18px;
-                    background: toggle.has-hover ? Theme.accent-hover : Theme.text;
-                    opacity: Player.available ? 1 : 0.35;
-
-                    Icon {
-                        path: Player.playing ? Icons.pause : Icons.play;
-                        size: 22px;
-                        tint: Theme.on-accent;
-                    }
-
-                    toggle := TouchArea {
-                        enabled: Player.available;
-                        mouse-cursor: pointer;
-                        clicked => {
-                            Player.toggle();
-                        }
-                    }
-                }
-
-                IconButton {
-                    icon: Icons.next;
-                    icon-size: 24px;
-                    enabled: Player.available;
-                    clicked => {
+            IconButton {
+                icon: Icons.forward-15;
+                icon-size: 20px;
+                enabled: Player.available;
+                clicked => {
+                    // Spotify too moves on rather than seek past the end.
+                    if Player.position-ms + 15000 >= Player.duration-ms {
                         Player.next();
-                    }
-                }
-
-                IconButton {
-                    icon: Icons.forward-15;
-                    icon-size: 20px;
-                    enabled: Player.available;
-                    clicked => {
-                        // Spotify too moves on rather than seek past the end.
-                        if Player.position-ms + 15000 >= Player.duration-ms {
-                            Player.next();
-                        } else {
-                            Player.seek(Player.position-ms + 15000);
-                        }
-                    }
-                }
-
-                IconButton {
-                    icon: Player.repeat == RepeatMode.one ? Icons.repeat-one : Icons.repeat;
-                    icon-size: 18px;
-                    active: Player.repeat != RepeatMode.off;
-                    clicked => {
-                        Player.cycle-repeat();
+                    } else {
+                        Player.seek(Player.position-ms + 15000);
                     }
                 }
             }
 
-            HorizontalLayout {
-                spacing: 8px;
-
-                Text {
-                    width: 52px;
-                    text: Player.clock(Player.position-ms);
-                    color: Theme.text-muted;
-                    font-size: 11px;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
-                }
-
-                progress := Bar {
-                    value: Player.duration-ms > 0 ? Player.position-ms / Player.duration-ms : 0;
-                    enabled: Player.available;
-                    marks: Player.chapters;
-                    scale: Player.duration-ms;
-                    changed(fraction) => {
-                        Player.seek(fraction * Player.duration-ms);
-                    }
-
-                    // The chapter under the pointer, as Spotify shows it.
-                    property <string> chapter: Player.chapters.length > 0 ? Player.chapter-title(self.pointer * Player.duration-ms) : "";
-
-                    if progress.hovered && progress.chapter != "": Rectangle {
-                        property <length> label-width: min(chapter-label.preferred-width + 16px, 320px);
-
-                        x: clamp(progress.width * progress.pointer - self.width / 2, -60px, progress.width - self.width + 60px);
-                        y: -self.height - 6px;
-                        width: self.label-width;
-                        height: 26px;
-                        border-radius: 4px;
-                        background: Theme.surface-active;
-
-                        chapter-label := Text {
-                            width: parent.width - 16px;
-                            text: progress.chapter;
-                            color: Theme.text;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            overflow: elide;
-                        }
-                    }
-                }
-
-                Text {
-                    width: 52px;
-                    text: Player.clock(Player.duration-ms);
-                    color: Theme.text-muted;
-                    font-size: 11px;
-                    vertical-alignment: center;
+            IconButton {
+                icon: Player.repeat == RepeatMode.one ? Icons.repeat-one : Icons.repeat;
+                icon-size: 18px;
+                active: Player.repeat != RepeatMode.off;
+                clicked => {
+                    Player.cycle-repeat();
                 }
             }
         }
 
-        // Queue and volume.
         HorizontalLayout {
-            horizontal-stretch: 3;
-            min-width: 180px;
-            alignment: end;
-            spacing: 4px;
+            spacing: 8px;
 
-            VerticalLayout {
-                alignment: center;
+            Text {
+                width: 52px;
+                text: Player.clock(Player.position-ms);
+                color: Theme.text-muted;
+                font-size: 11px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
 
-                IconButton {
-                    icon: Icons.lyrics;
-                    icon-size: 18px;
-                    active: LyricsView.visible;
-                    clicked => {
-                        LyricsView.visible = !LyricsView.visible;
-                        if LyricsView.visible {
-                            Queue.visible = false;
-                            LyricsView.shown();
-                        }
+            progress := Bar {
+                value: Player.duration-ms > 0 ? Player.position-ms / Player.duration-ms : 0;
+                enabled: Player.available;
+                marks: Player.chapters;
+                scale: Player.duration-ms;
+                changed(fraction) => {
+                    Player.seek(fraction * Player.duration-ms);
+                }
+
+                // The chapter under the pointer, as Spotify shows it.
+                property <string> chapter: Player.chapters.length > 0 ? Player.chapter-title(self.pointer * Player.duration-ms) : "";
+
+                if progress.hovered && progress.chapter != "": Rectangle {
+                    property <length> label-width: min(chapter-label.preferred-width + 16px, 320px);
+
+                    x: clamp(progress.width * progress.pointer - self.width / 2, -60px, progress.width - self.width + 60px);
+                    y: -self.height - 6px;
+                    width: self.label-width;
+                    height: 26px;
+                    border-radius: 4px;
+                    background: Theme.surface-active;
+
+                    chapter-label := Text {
+                        width: parent.width - 16px;
+                        text: progress.chapter;
+                        color: Theme.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        overflow: elide;
                     }
                 }
             }
 
-            VerticalLayout {
-                alignment: center;
+            Text {
+                width: 52px;
+                text: Player.clock(Player.duration-ms);
+                color: Theme.text-muted;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+    }
 
-                IconButton {
-                    icon: Icons.queue;
-                    icon-size: 18px;
-                    active: Queue.visible;
-                    clicked => {
-                        Queue.visible = !Queue.visible;
-                        if Queue.visible {
-                            LyricsView.visible = false;
-                        }
+    // Queue and volume.
+    HorizontalLayout {
+        x: root.width - 16px - root.right-width;
+        width: root.right-width;
+        alignment: end;
+        spacing: 4px;
+
+        VerticalLayout {
+            alignment: center;
+
+            IconButton {
+                icon: Icons.lyrics;
+                icon-size: 18px;
+                active: LyricsView.visible;
+                clicked => {
+                    LyricsView.visible = !LyricsView.visible;
+                    if LyricsView.visible {
+                        Queue.visible = false;
+                        LyricsView.shown();
                     }
                 }
             }
+        }
 
-            VerticalLayout {
-                alignment: center;
+        VerticalLayout {
+            alignment: center;
 
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-
-                    IconButton {
-                        icon: Icons.devices;
-                        icon-size: 18px;
-                        active: Devices.remote-name != "";
-                        clicked => {
-                            devices-popup.show();
-                        }
+            IconButton {
+                icon: Icons.queue;
+                icon-size: 18px;
+                active: Queue.visible;
+                clicked => {
+                    Queue.visible = !Queue.visible;
+                    if Queue.visible {
+                        LyricsView.visible = false;
                     }
+                }
+            }
+        }
 
-                    devices-popup := PopupWindow {
-                        // Up to eight devices are shown before the list scrolls.
-                        property <length> list-height: min(Devices.items.length, 8) * 48px;
+        VerticalLayout {
+            alignment: center;
 
-                        x: 32px - self.width;
-                        y: -self.height - 12px;
-                        width: 288px;
-                        height: self.list-height + 56px;
+            Rectangle {
+                width: 32px;
+                height: 32px;
 
-                        Rectangle {
-                            background: Theme.surface-active;
-                            border-radius: 8px;
-                            border-width: 1px;
-                            border-color: Theme.divider;
+                IconButton {
+                    icon: Icons.devices;
+                    icon-size: 18px;
+                    active: Devices.remote-name != "";
+                    clicked => {
+                        devices-popup.show();
+                    }
+                }
 
-                            VerticalLayout {
-                                padding: 8px;
+                devices-popup := PopupWindow {
+                    // Up to eight devices are shown before the list scrolls.
+                    property <length> list-height: min(Devices.items.length, 8) * 48px;
 
-                                Text {
-                                    height: 40px;
-                                    text: "  Connect to a device";
-                                    color: Theme.text;
-                                    font-size: 15px;
-                                    font-weight: 700;
-                                    vertical-alignment: center;
-                                }
+                    x: 32px - self.width;
+                    y: -self.height - 12px;
+                    width: 288px;
+                    height: self.list-height + 56px;
 
-                                ListView {
-                                    for device[index] in Devices.items: DeviceRow {
-                                        device: device;
-                                        clicked => {
-                                            Devices.transfer(index);
-                                            devices-popup.close();
-                                        }
+                    Rectangle {
+                        background: Theme.surface-active;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.divider;
+
+                        VerticalLayout {
+                            padding: 8px;
+
+                            Text {
+                                height: 40px;
+                                text: "  Connect to a device";
+                                color: Theme.text;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            ListView {
+                                for device[index] in Devices.items: DeviceRow {
+                                    device: device;
+                                    clicked => {
+                                        Devices.transfer(index);
+                                        devices-popup.close();
                                     }
                                 }
                             }
@@ -379,29 +384,29 @@ export component PlayerBar inherits Rectangle {
                     }
                 }
             }
+        }
 
-            VerticalLayout {
-                alignment: center;
+        VerticalLayout {
+            alignment: center;
 
-                IconButton {
-                    icon: Player.volume == 0 ? Icons.volume-off : Icons.volume;
-                    icon-size: 18px;
-                    clicked => {
-                        Player.set-volume(Player.volume == 0 ? 0.5 : 0);
-                    }
+            IconButton {
+                icon: Player.volume == 0 ? Icons.volume-off : Icons.volume;
+                icon-size: 18px;
+                clicked => {
+                    Player.set-volume(Player.volume == 0 ? 0.5 : 0);
                 }
             }
+        }
 
-            VerticalLayout {
-                alignment: center;
+        VerticalLayout {
+            alignment: center;
 
-                Bar {
-                    width: 96px;
-                    value: Player.volume;
-                    live: true;
-                    changed(fraction) => {
-                        Player.set-volume(fraction);
-                    }
+            Bar {
+                width: 96px;
+                value: Player.volume;
+                live: true;
+                changed(fraction) => {
+                    Player.set-volume(fraction);
                 }
             }
         }
