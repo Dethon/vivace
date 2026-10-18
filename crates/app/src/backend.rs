@@ -271,6 +271,9 @@ async fn run(
     let mut lost: Option<Lost> = None;
     // Playback to carry into the session a settings change starts.
     let mut left_off: Option<LeftOff> = None;
+    // Shared by every session: the UI drops a queue numbered below the
+    // last it showed, so a new session must not count from zero again.
+    let queue_sequence = Arc::<AtomicU64>::default();
     loop {
         if updates.send(Update::Connecting).is_err() {
             return;
@@ -290,7 +293,7 @@ async fn run(
                     liked_uri: engine.liked_songs_uri(),
                     engine,
                     updates: updates.clone(),
-                    queue_sequence: 0,
+                    queue_sequence: queue_sequence.clone(),
                     remote: RemoteControl::default(),
                     commands: Arc::default(),
                     remote_track: None,
@@ -329,7 +332,8 @@ struct Session {
     api: Api,
     liked_uri: String,
     updates: UnboundedSender<Update>,
-    queue_sequence: u64,
+    /// Increases with every queue change, across sessions.
+    queue_sequence: Arc<AtomicU64>,
     remote: RemoteControl,
     /// Counts the commands sent to other devices, so that a slow recovery
     /// gives way to whatever the user pressed since.
@@ -700,8 +704,7 @@ impl Session {
         match event {
             Event::Item(item) => self.announce(item),
             Event::Queue(queue) => {
-                self.queue_sequence += 1;
-                let sequence = self.queue_sequence;
+                let sequence = self.next_queue_sequence();
                 self.spawn(move |api, _| async move { resolve_queue(&api, queue, sequence).await });
             }
             Event::Playback(playback) => self.send(Update::Playback(playback)),
@@ -730,13 +733,16 @@ impl Session {
                         self.announce(track);
                     }
                 }
-                self.queue_sequence += 1;
-                let (queue, sequence) = (remote.queue.clone(), self.queue_sequence);
+                let (queue, sequence) = (remote.queue.clone(), self.next_queue_sequence());
                 self.spawn(move |api, _| async move { resolve_queue(&api, queue, sequence).await });
             }
             None => self.remote_track = None,
         }
         self.send(Update::Connect(connect));
+    }
+
+    fn next_queue_sequence(&self) -> u64 {
+        self.queue_sequence.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Resolves a track or episode and reports it as the one playing.

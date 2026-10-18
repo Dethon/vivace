@@ -5,6 +5,7 @@
 //!   cli listen <context uri> [seconds]     plays and prints what happens
 //!   cli track-end <context uri> <ms>     starts the second track at <ms> and waits for the next
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
+//!   cli queue-test <context uri> <track uri> <queued track uri>     plays the context, then the track on its own, then queues the other, printing each queue reported
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
 //!   cli remote-pause <device id>     pauses another device
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
@@ -504,6 +505,41 @@ async fn run() -> Fallible<()> {
         ["watch", rest @ ..] => {
             let seconds = rest.first().map_or(Ok(5), |seconds| seconds.parse())?;
             watch(&engine, &mut events, seconds, false).await?;
+        }
+        ["queue-test", context, track, queued] => {
+            let print_queues = async |events: &mut Events, seconds: u64| {
+                let deadline = tokio::time::sleep(Duration::from_secs(seconds));
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        _ = &mut deadline => break,
+                        event = events.recv() => match event {
+                            Some(Event::Queue(queue)) => println!(
+                                "queue: context <{}> current {:?} next {} (queued {})",
+                                queue.context_uri,
+                                queue.current.map(|item| item.uri()),
+                                queue.next.len(),
+                                queue.next.iter().filter(|next| next.queued).count()
+                            ),
+                            Some(Event::Item(item)) => println!("item: {}", item.uri()),
+                            Some(_) => {}
+                            None => break,
+                        },
+                    }
+                }
+            };
+            println!("-- play {context}");
+            engine.play_context(context, Start::Beginning, false, Repeat::Off)?;
+            print_queues(&mut events, 6).await;
+            let track = ItemRef::from_uri(track).ok_or("track uri")?;
+            println!("-- play the single track {}", track.uri());
+            engine.play_tracks(&[track], 0, Repeat::Off)?;
+            print_queues(&mut events, 6).await;
+            let queued = ItemRef::from_uri(queued).ok_or("queued uri")?;
+            println!("-- queue {}", queued.uri());
+            engine.add_to_queue(queued)?;
+            print_queues(&mut events, 4).await;
+            engine.pause()?;
         }
         ["remote", rest @ ..] => {
             let seconds = rest.first().map_or(Ok(20), |seconds| seconds.parse())?;
