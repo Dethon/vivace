@@ -6,7 +6,8 @@
 //! samples and every later write waits forever for room in its buffer: the
 //! player hangs, silent, until the app restarts. This sink opens the current
 //! default device again once its stream fails, whether that happened while
-//! playing or while paused.
+//! playing or while paused, and when the system picks another default device,
+//! as it does when the headphones it fell back from are plugged in again.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,14 +30,20 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(5);
 // A new stream gets longer: some devices (Bluetooth) take seconds to start.
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+// How often the system's default device is compared with the one playing.
+const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The player's sink: rodio on the default device, reopened when it fails.
 #[derive(Default)]
 pub struct Output {
     stream: Option<Stream>,
+    /// When the default device was last compared with the stream's.
+    default_checked: Option<Instant>,
 }
 
 struct Stream {
+    /// The device's name, which is all cpal tells devices apart by.
+    device: String,
     sink: rodio::Sink,
     // Plays the sink's samples for as long as it is kept.
     _output: rodio::OutputStream,
@@ -52,7 +59,7 @@ impl Stream {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or_else(|| SinkError::ConnectionRefused("no audio output device".into()))?;
-        let name = device.name().unwrap_or_else(|_| "[unknown name]".into());
+        let name = device_name(&device);
         // Stereo 44.1 kHz when the device takes it, else at its own rate
         // (rodio resamples), else whatever it offers, as librespot does.
         let default_config = device.default_output_config().map_err(refused)?;
@@ -96,6 +103,7 @@ impl Stream {
         output.log_on_drop(false);
         log::info!("playing to {name}");
         Ok(Self {
+            device: name,
             sink: rodio::Sink::connect_new(output.mixer()),
             _output: output,
             failed,
@@ -133,22 +141,51 @@ impl Stream {
     }
 }
 
+fn device_name(device: &cpal::Device) -> String {
+    device.name().unwrap_or_else(|_| "[unknown name]".into())
+}
+
 fn refused(error: impl std::fmt::Display) -> SinkError {
     SinkError::ConnectionRefused(error.to_string())
 }
 
 impl Output {
     /// The open stream, reopened on the current default device if the last
-    /// one failed.
+    /// one failed or another device became the default.
     fn stream(&mut self) -> SinkResult<&Stream> {
-        if self.stream.as_ref().is_some_and(Stream::failed) {
-            // Let go of the dead device before opening the new one.
+        if self.stream.as_ref().is_some_and(Stream::failed) || self.default_changed() {
+            // Let go of the old device before opening the new one.
             self.stream = None;
         }
         if self.stream.is_none() {
             self.stream = Some(Stream::open()?);
         }
         Ok(self.stream.as_ref().expect("opened above"))
+    }
+
+    /// Whether the system has a default device other than the one playing,
+    /// checked at most once a second. Without a default device, the stream
+    /// stays where it is.
+    fn default_changed(&mut self) -> bool {
+        let Some(stream) = &self.stream else {
+            return false;
+        };
+        if self
+            .default_checked
+            .is_some_and(|checked| checked.elapsed() < DEFAULT_CHECK_INTERVAL)
+        {
+            return false;
+        }
+        self.default_checked = Some(Instant::now());
+        let Some(device) = cpal::default_host().default_output_device() else {
+            return false;
+        };
+        let name = device_name(&device);
+        if name == stream.device {
+            return false;
+        }
+        log::info!("the default audio output is now {name}");
+        true
     }
 }
 

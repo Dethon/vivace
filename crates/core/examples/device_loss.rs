@@ -7,6 +7,9 @@
 //!   device_loss paused     the device goes while paused, then playback resumes
 //!   device_loss playing    the device goes mid-play; the write fails, the
 //!                          player pauses, and play resumes on the new device
+//!   device_loss follow     plays for 20 s and reports each move to another
+//!                          default device, made by hand meanwhile (Windows:
+//!                          headphones unplugged and plugged in again)
 //!
 //! Without `DEVICE_LOSS_REPLACE` (as on Windows) the device stays, which still
 //! checks that the sink plays in real time.
@@ -15,6 +18,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use cpal::traits::{DeviceTrait, HostTrait};
 use librespot_playback::{audio_backend::Sink, convert::Converter, decoder::AudioPacket};
 use vivace_core::Output;
 
@@ -48,12 +52,14 @@ fn replace_device() {
 }
 
 fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let scenario = std::env::args().nth(1).unwrap_or_default();
     let paused = match scenario.as_str() {
         "paused" => true,
         "playing" => false,
+        "follow" => return follow(),
         _ => {
-            eprintln!("usage: device_loss paused|playing");
+            eprintln!("usage: device_loss paused|playing|follow");
             std::process::exit(2);
         }
     };
@@ -85,4 +91,17 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Plays silence while the default device changes; `Output` logs each move.
+fn follow() {
+    let default = cpal::default_host()
+        .default_output_device()
+        .and_then(|device| device.name().ok());
+    println!("default device at the start: {default:?}");
+    let mut sink = Output::default();
+    sink.start().expect("start");
+    silence(&mut sink, 20.0);
+    sink.stop().expect("stop");
+    println!("done");
 }
