@@ -1,4 +1,5 @@
-//! Media keys and the operating system's "now playing" display.
+//! Media keys, the operating system's "now playing" display and, on
+//! Windows, the buttons under the taskbar preview.
 
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use vivace_core::model::Track;
 
 use crate::backend::Update;
+use crate::thumbbar::ThumbBar;
 
 // Jump made by a media key that seeks without saying how far.
 const SEEK_STEP: Duration = Duration::from_secs(10);
@@ -29,7 +31,10 @@ pub enum MediaCommand {
     SeekBy(i64),
 }
 
-pub struct MediaKeys(MediaControls);
+pub struct MediaKeys {
+    controls: MediaControls,
+    thumb_bar: Option<ThumbBar>,
+}
 
 /// Outcome of trying to register with the system.
 pub enum Attach {
@@ -58,6 +63,15 @@ impl MediaKeys {
             hwnd,
         };
 
+        #[cfg(windows)]
+        let thumb_bar = hwnd.and_then(|hwnd| {
+            ThumbBar::new(hwnd, updates.clone())
+                .inspect_err(|error| log::warn!("thumbnail buttons are unavailable: {error}"))
+                .ok()
+        });
+        #[cfg(not(windows))]
+        let thumb_bar = None;
+
         let attach = || -> Result<MediaControls, souvlaki::Error> {
             let mut controls = MediaControls::new(config)?;
             controls.attach(move |event| {
@@ -69,7 +83,10 @@ impl MediaKeys {
             Ok(controls)
         };
         match attach() {
-            Ok(controls) => Attach::Ready(Self(controls)),
+            Ok(controls) => Attach::Ready(Self {
+                controls,
+                thumb_bar,
+            }),
             Err(error) => {
                 log::warn!("media keys are unavailable: {error:?}");
                 Attach::Unavailable
@@ -85,19 +102,22 @@ impl MediaKeys {
             cover_url: track.cover.as_ref().map(|cover| cover.url()),
             duration: Some(Duration::from_millis(track.duration_ms.into())),
         };
-        if let Err(error) = self.0.set_metadata(metadata) {
+        if let Err(error) = self.controls.set_metadata(metadata) {
             log::warn!("couldn't publish the playing track: {error:?}");
         }
     }
 
     pub fn set_playback(&mut self, playing: bool, position_ms: u32) {
+        if let Some(thumb_bar) = &self.thumb_bar {
+            thumb_bar.set_playing(playing);
+        }
         let progress = Some(MediaPosition(Duration::from_millis(position_ms.into())));
         let playback = if playing {
             MediaPlayback::Playing { progress }
         } else {
             MediaPlayback::Paused { progress }
         };
-        if let Err(error) = self.0.set_playback(playback) {
+        if let Err(error) = self.controls.set_playback(playback) {
             log::warn!("couldn't publish the playback state: {error:?}");
         }
     }

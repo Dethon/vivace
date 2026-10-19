@@ -897,6 +897,13 @@ impl App {
             Update::Stopped => {
                 self.state.borrow_mut().playing = false;
                 self.with_ui(|ui| ui.global::<Player>().set_playing(false));
+                if let Some(media) = self.media.borrow_mut().as_mut() {
+                    let position_ms = self
+                        .ui
+                        .upgrade()
+                        .map_or(0, |ui| ui.global::<Player>().get_position_ms());
+                    media.set_playback(false, position_ms.max(0) as u32);
+                }
                 self.follow_lyrics();
             }
             Update::Volume(volume) => {

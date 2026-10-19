@@ -13,6 +13,7 @@ mod models;
 pub mod notify;
 mod settings;
 pub mod system;
+mod thumbbar;
 mod tray;
 
 slint::include_modules!();
