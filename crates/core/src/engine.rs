@@ -35,7 +35,7 @@ const SESSION_CHECK: Duration = Duration::from_secs(5);
 /// How long closing waits for the last episode position to be recorded.
 const FINAL_SAVE_TIMEOUT: Duration = Duration::from_secs(2);
 // Context librespot gives a list of tracks loaded without one.
-const TRACK_LIST_URI: &str = "spotify:web-api";
+pub(crate) const TRACK_LIST_URI: &str = "spotify:web-api";
 // Provider Spotify assigns to tracks the user queued by hand.
 pub(crate) const QUEUE_PROVIDER: &str = "queue";
 

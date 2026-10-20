@@ -4,7 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use librespot_protocol::{connect::Cluster, devices::DeviceType};
 
-use crate::{Queue, QueueItem, Repeat, engine::QUEUE_PROVIDER, model::ItemRef};
+use crate::{
+    Queue, QueueItem, Repeat,
+    engine::{QUEUE_PROVIDER, TRACK_LIST_URI},
+    model::ItemRef,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceKind {
@@ -110,7 +114,11 @@ impl Connect {
                 Remote {
                     device: active.into(),
                     queue: Queue {
-                        context_uri: state.context_uri.as_str().into(),
+                        // As this computer's own queue names a plain list.
+                        context_uri: match state.context_uri.as_str() {
+                            TRACK_LIST_URI => Box::default(),
+                            uri => uri.into(),
+                        },
                         current: ItemRef::from_uri(&state.track.uri),
                         next: state
                             .next_tracks

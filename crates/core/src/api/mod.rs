@@ -36,4 +36,12 @@ impl Api {
     pub async fn fetch(&self, url: &str) -> crate::Result<Vec<u8>> {
         Ok(self.0.get(url).await?.to_vec())
     }
+
+    /// Resolves a context the way Spirc does before loading it, and counts
+    /// the items of its first page, for checking what a load would get.
+    #[doc(hidden)]
+    pub async fn resolve_context(&self, uri: &str) -> crate::Result<usize> {
+        let context = self.0.session().spclient().get_context(uri).await?;
+        Ok(context.pages.first().map_or(0, |page| page.tracks.len()))
+    }
 }

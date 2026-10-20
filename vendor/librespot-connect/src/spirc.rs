@@ -1434,10 +1434,26 @@ impl SpircTask {
 
     async fn handle_load(
         &mut self,
-        cmd: LoadRequest,
+        mut cmd: LoadRequest,
         page: Option<ContextPage>,
         fallback_index: Option<usize>,
     ) -> Result<(), Error> {
+        // vivace: another client resuming a track list names it with the
+        // placeholder librespot gave it, which Spotify cannot resolve;
+        // resolving it failed the load and left the device active with
+        // nothing loaded, so play was ignored. Load its tracks instead.
+        if matches!(cmd.context, PlayContext::Uri(ref uri) if uri == WEB_API_URI) {
+            let tracks: Vec<String> = page
+                .iter()
+                .flat_map(|page| &page.tracks)
+                .filter_map(|track| track.uri.clone())
+                .collect();
+            if tracks.is_empty() {
+                Err(SpircError::NoUri("context"))?
+            }
+            cmd.context = PlayContext::Tracks(tracks);
+        }
+
         self.connect_state
             .reset_context(if let PlayContext::Uri(ref uri) = cmd.context {
                 ResetContext::WhenDifferent(uri)

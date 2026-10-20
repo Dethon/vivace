@@ -7,15 +7,18 @@
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli queue-test <context uri> <track uri> <queued track uri>     plays the context, then the track on its own, then queues the other, printing each queue reported
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
+//!   cli placeholder-test     has another client's play command start a plain list on this device, as Spotify sends it
 //!   cli remote-pause <device id>     pauses another device
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
 //!   cli control-test <device id> [seconds]     plays Liked Songs, moves it to a device and pauses and resumes it there twice, `seconds` apart
 //!   cli pull-test [seconds]     waits, then takes playback here as choosing this computer does, and prints what follows
 //!   cli speaker-test <device id> [idle|play|next|context=<uri>|paused-context=<uri>]     takes the account's playback (unless idle), paused or playing, moves it to a device as the device picker does, prints Spotify's answer and gives it back; it commands a real device, so ask before pointing it at someone's speaker
+//!   cli resolve <context uri>...     resolves contexts as librespot does before loading them
+//!   cli item <track or episode uri>     prints a track's or episode's metadata
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id|paused]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on (or, paused, that play starts it again where it stopped)
-//!   cli idle-test [transfer|drop]     plays Liked Songs, pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play; or, once a dropped connection is back, play) starts it again where it was
+//!   cli idle-test [transfer|drop] [list]     plays Liked Songs (or, with `list`, its first tracks as a plain list), pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play; or, once a dropped connection is back, play) starts it again where it was
 //!   cli settings-test [paused]     plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
@@ -79,7 +82,9 @@ async fn run() -> Fallible<()> {
         return settings_test(config, args.get(1) == Some(&"paused")).await;
     }
     if args.first() == Some(&"idle-test") {
-        return idle_test(config, args.get(1).copied()).await;
+        let list = args.contains(&"list");
+        let mode = args.get(1).copied().filter(|mode| *mode != "list");
+        return idle_test(config, mode, list).await;
     }
     if let ["speaker-test", device, rest @ ..] = args.as_slice() {
         return speaker_test(config, device, rest.first().copied()).await;
@@ -200,6 +205,18 @@ async fn run() -> Fallible<()> {
             set(false).await?;
             println!("after removing: in library = {}", present().await?);
         }
+        ["resolve", uris @ ..] => {
+            for uri in uris {
+                match api.resolve_context(uri).await {
+                    Ok(count) => println!("{uri}: {count} items"),
+                    Err(error) => println!("{uri}: {error}"),
+                }
+            }
+        }
+        ["item", id] => {
+            let item = ItemRef::from_uri(id).ok_or("not a track or episode uri")?;
+            println!("{:?}", api.items(&[item]).await?);
+        }
         ["show", id] => {
             let details = api.show(Id::from_base62(id)?).await?;
             println!("{:?}", details.show);
@@ -251,6 +268,31 @@ async fn run() -> Fallible<()> {
                 }
             }
             println!("recorded {:?}", api.episode_progress(episode.id).await?);
+        }
+        ["placeholder-test"] => {
+            // Another client resuming a plain list names it with librespot's
+            // placeholder, which Spotify can't resolve.
+            let liked = api.saved().await?.tracks;
+            let tracks: Vec<ItemRef> = liked
+                .iter()
+                .take(10)
+                .map(|saved| ItemRef::track(saved.id))
+                .collect();
+            // Spotify knows the device only once it has registered.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            println!("-> asking this device to play a list named spotify:web-api");
+            api.play_placeholder_list_here(&tracks).await?;
+            let played = wait_for(&mut events, 20, |event| {
+                matches!(event, Event::Playback(Playback { playing: true, .. }))
+            })
+            .await;
+            match played {
+                Some(_) => {
+                    engine.pause()?;
+                    println!("PASS: the list plays");
+                }
+                None => println!("FAIL: nothing played"),
+            }
         }
         ["remote-pause", device] => {
             println!("{:?}", api.remote(device, RemoteCommand::Pause).await);
@@ -1056,11 +1098,23 @@ async fn watch_connect(events: &mut Events, connect: &mut Option<Connect>, secon
     }
 }
 
-async fn idle_test(mut config: Config, mode: Option<&str>) -> Fallible<()> {
+async fn idle_test(mut config: Config, mode: Option<&str>, list: bool) -> Fallible<()> {
     // The app keeps its device id across reconnects.
     config.persistent_device = true;
     let (mut engine, mut events) = Engine::connect(config.clone()).await?;
-    play_liked(&engine)?;
+    if list {
+        // A plain list of tracks, as search results or a show's episodes
+        // play: librespot names it with a placeholder Spotify can't resolve.
+        let liked = engine.api().saved().await?.tracks;
+        let tracks: Vec<ItemRef> = liked
+            .iter()
+            .take(10)
+            .map(|saved| ItemRef::track(saved.id))
+            .collect();
+        engine.play_tracks(&tracks, 0, Repeat::Off)?;
+    } else {
+        play_liked(&engine)?;
+    }
     let item = started(&mut events).await?;
     playing_past(&mut events, 8000).await?;
     let paused_at = pause(&engine, &mut events).await?;
@@ -1111,6 +1165,10 @@ async fn idle_test(mut config: Config, mode: Option<&str>) -> Fallible<()> {
             }
         }
     }
+    println!(
+        "-> left off: {:?}",
+        engine.left_off().map(|left_off| left_off.playing)
+    );
     println!("-> play");
     engine.play()?;
     let resumed = wait_for(&mut events, 20, |event| {

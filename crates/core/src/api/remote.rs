@@ -306,6 +306,18 @@ impl Api {
         }
     }
 
+    /// Asks this device to play a track list under librespot's placeholder
+    /// context, as another client resuming such a list does, for tests.
+    #[doc(hidden)]
+    pub async fn play_placeholder_list_here(&self, tracks: &[ItemRef]) -> Result<()> {
+        let play = RemotePlay::Tracks { tracks, index: 0 };
+        let mut body = serde_json::to_value(play_body(play, false, Repeat::Off)).map_err(decode)?;
+        body["command"]["context"]["uri"] = "spotify:web-api".into();
+        body["command"]["context"]["url"] = "context://spotify:web-api".into();
+        let body = serde_json::to_vec(&body).map_err(decode)?;
+        self.command(&self.device_id().to_owned(), body).await
+    }
+
     fn device_id(&self) -> &str {
         self.0.session().device_id()
     }

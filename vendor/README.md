@@ -87,6 +87,12 @@ Local changes, marked `vivace:` in `src/spirc.rs`, `src/state.rs` and
     takeover, and Vivace then showed nothing playing anywhere while a speaker
     played; the dealer pushes the cluster to an inactive device.
 
+13. `SpircTask::handle_load` plays the tracks of a load whose context is
+    `spotify:web-api`, the placeholder librespot names a plain track list
+    with. Another client resuming such a list sends that uri with the
+    tracks; upstream tried to resolve it, Spotify answered 400, and the
+    device stayed active with nothing loaded, ignoring play.
+
 ## librespot-audio
 
 A copy of `audio/` from the same commit, also wired in through `[patch]`.
