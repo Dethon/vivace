@@ -3,6 +3,7 @@
 //! Spotify's apps keep this in a service of its own, which records every
 //! change as a revision; the latest revision of an episode is its state.
 
+use futures_util::future::join_all;
 use http::Method;
 use prost::Message as _;
 
@@ -113,6 +114,19 @@ impl Api {
             .await?;
         let revisions = ListResponse::decode(response).map_err(decode)?.revisions;
         Ok(latest(&revisions))
+    }
+
+    /// How far the user has listened to each episode, in the order given;
+    /// `None` for one that couldn't be looked up.
+    pub async fn episodes_progress(&self, episodes: &[Id]) -> Vec<Option<Progress>> {
+        let lookups = episodes
+            .iter()
+            .map(|&episode| self.episode_progress(episode));
+        join_all(lookups)
+            .await
+            .into_iter()
+            .map(Result::ok)
+            .collect()
     }
 
     /// Records how far the user has listened to an episode.

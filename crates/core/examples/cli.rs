@@ -22,7 +22,7 @@
 //!   cli settings-test [paused]     plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
-//!   cli episode-end <episode id> [next episode id]     plays an episode's last seconds, which marks it played, and goes on to the next
+//!   cli episode-end <episode id> [next episode id | show <show id>]     plays an episode's last seconds, which marks it played, and goes on to the next (in its podcast, the one that follows in the podcast's context)
 //!
 //! `CLI_NAME` names the cli's device, to tell two copies apart.
 //!
@@ -241,12 +241,23 @@ async fn run() -> Fallible<()> {
                 .pop()
                 .flatten()
                 .ok_or("no such episode")?;
-            // A second episode, if given, plays next.
-            let mut list = vec![episode];
-            for next in rest {
-                list.push(ItemRef::episode(Id::from_base62(next)?));
+            match rest {
+                // In its podcast's context, as a podcast page plays it.
+                ["show", show] => engine.play_context(
+                    &Kind::Show.uri(Id::from_base62(show)?),
+                    Start::Item(episode),
+                    false,
+                    Repeat::Off,
+                )?,
+                // A second episode, if given, plays next.
+                _ => {
+                    let mut list = vec![episode];
+                    for next in rest {
+                        list.push(ItemRef::episode(Id::from_base62(next)?));
+                    }
+                    engine.play_tracks(&list, 0, Repeat::Off)?;
+                }
             }
-            engine.play_tracks(&list, 0, Repeat::Off)?;
             let deadline = tokio::time::sleep(Duration::from_secs(15));
             tokio::pin!(deadline);
             let mut sought = false;

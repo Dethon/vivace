@@ -8,8 +8,8 @@
 //! With `LIVE_PLAYLIST_EDIT=1` it instead stops after the playlist page,
 //! adds a track to a new playlist, renames that playlist and deletes it. With
 //! `LIVE_NO_PLAYBACK=1` it only browses, leaving other devices undisturbed.
-//! With `LIVE_PODCAST=1` it opens a followed podcast, plays its newest
-//! episode from where it was left, and saves it to Your Episodes and back.
+//! With `LIVE_PODCAST=1` it opens a followed podcast, plays it from where it
+//! was left, and saves the episode to Your Episodes and back.
 //! With `LIVE_SETTINGS=1` it changes settings and signs out; afterwards the
 //! saved login is gone, so keep a copy of it to restore.
 //! With `LIVE_REMOTE=<device name>` it plays Liked Songs, moves playback to
@@ -412,7 +412,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    // Opens the first followed podcast from Home and plays its latest episode.
+    // Opens the first followed podcast from Home and plays it from where it was left.
     if std::env::var_os("LIVE_PODCAST").is_some() {
         steps.truncate(1);
         steps.push((
@@ -432,8 +432,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         steps.push((
             "p3-episode-playing",
             7000,
-            // The header's play button, which starts the newest episode
-            // where it was left.
+            // The header's play button, which picks up where the user
+            // left off in the podcast, or else starts the newest episode.
             Box::new(|ui| {
                 ui.global::<Queue>().set_visible(true);
                 ui.global::<Nav>().invoke_play_page();

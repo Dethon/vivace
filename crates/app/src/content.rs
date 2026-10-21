@@ -62,9 +62,9 @@ pub struct PageData {
     pub header: Option<Header>,
     /// Spotify context the page's tracks play in; without one they play as a plain list.
     pub context: Option<String>,
-    /// The tracks play in the page's order, as a plain list, because the
-    /// context's own order differs from it.
-    pub listed_order: bool,
+    /// For a podcast, the order its episodes are listed in; its Play button
+    /// picks up where the user left off.
+    pub episodes: Option<EpisodeOrder>,
     pub sections: Vec<Section>,
 }
 
@@ -133,6 +133,12 @@ pub struct TrackSection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpisodeOrder {
+    NewestFirst,
+    OldestFirst,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dates {
     None,
     /// When the track was added to the playlist or library.
@@ -195,7 +201,7 @@ impl Page {
             Page::Settings => Ok(PageData {
                 header: None,
                 context: None,
-                listed_order: false,
+                episodes: None,
                 sections: Vec::new(),
             }),
         }
@@ -246,7 +252,7 @@ async fn home(api: &Api) -> Result<PageData> {
     Ok(PageData {
         header: None,
         context: None,
-        listed_order: false,
+        episodes: None,
         sections,
     })
 }
@@ -279,7 +285,7 @@ async fn liked(api: &Api, collection_uri: &str) -> Result<PageData> {
             external: None,
         }),
         context: Some(collection_uri.into()),
-        listed_order: false,
+        episodes: None,
         sections: vec![track_list(
             tracks,
             Dates::Added,
@@ -321,7 +327,7 @@ async fn your_episodes(api: &Api, collection_uri: &str) -> Result<PageData> {
             external: None,
         }),
         context: Some(format!("{collection_uri}:your-episodes")),
-        listed_order: false,
+        episodes: None,
         sections: vec![track_list(
             episodes,
             Dates::Added,
@@ -368,7 +374,7 @@ async fn playlist(api: &Api, id: Id) -> Result<PageData> {
             external: None,
         }),
         context: Some(Kind::Playlist.uri(id)),
-        listed_order: false,
+        episodes: None,
         sections: vec![track_list(
             tracks,
             Dates::Added,
@@ -408,7 +414,7 @@ async fn album(api: &Api, id: Id) -> Result<PageData> {
             external: None,
         }),
         context: Some(Kind::Album.uri(id)),
-        listed_order: false,
+        episodes: None,
         sections: vec![track_list(
             tracks,
             Dates::None,
@@ -473,7 +479,7 @@ async fn artist(api: &Api, id: Id) -> Result<PageData> {
             external: None,
         }),
         context: Some(Kind::Artist.uri(id)),
-        listed_order: false,
+        episodes: None,
         sections,
     })
 }
@@ -504,9 +510,13 @@ async fn show(api: &Api, id: Id) -> Result<PageData> {
             external: None,
         }),
         context: Some(Kind::Show.uri(id)),
-        // A series plays in the context's order, which is the page's; other
-        // shows list newest first and go on to the next older episode.
-        listed_order: !details.sequential,
+        // The context runs oldest first, so an episode goes on to the next
+        // newer one; only a series is listed in that order too.
+        episodes: Some(if details.sequential {
+            EpisodeOrder::OldestFirst
+        } else {
+            EpisodeOrder::NewestFirst
+        }),
         sections: vec![track_list(
             episodes,
             Dates::Released,
@@ -546,7 +556,7 @@ fn audiobook(details: ShowDetails) -> PageData {
             external: Some(format!("https://open.spotify.com/show/{}", id.to_base62())),
         }),
         context: None,
-        listed_order: false,
+        episodes: None,
         sections,
     }
 }
@@ -608,7 +618,7 @@ async fn search(api: &Api, query: &str) -> Result<PageData> {
     Ok(PageData {
         header: None,
         context: None,
-        listed_order: false,
+        episodes: None,
         sections,
     })
 }
@@ -644,7 +654,7 @@ async fn search_all(api: &Api, query: &str, kind: SearchKind) -> Result<PageData
     Ok(PageData {
         header: None,
         context: None,
-        listed_order: false,
+        episodes: None,
         sections,
     })
 }

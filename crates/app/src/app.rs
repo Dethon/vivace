@@ -17,7 +17,7 @@ use crate::{
     Library, LibraryItem, LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind,
     SaveKind, Session, SettingsView, TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
-    content::{Card, Dates, Emblem, Page, PageData, Saveable, Section, TrackSection},
+    content::{Card, Dates, Emblem, Page, PageData, Saveable, Section},
     format,
     images::{Images, Shape},
     library::{self, Filter, Row as LibraryRow, Sort},
@@ -920,6 +920,15 @@ impl App {
                 self.progress.borrow_mut().insert(episode, Some(progress));
                 self.refresh_track(episode);
             }
+            Update::ShowStart { uri, episode } => {
+                let state = self.state.borrow();
+                self.request(Request::PlayContext {
+                    uri,
+                    start: Start::Item(episode),
+                    shuffle: state.shuffle,
+                    repeat: state.repeat,
+                });
+            }
             // While another device plays, its state is what the player shows.
             Update::Playback(_) | Update::Position(_) | Update::Stopped | Update::Volume(_)
                 if self.state.borrow().remote.is_some() => {}
@@ -1698,7 +1707,7 @@ impl App {
             let data = Rc::new(result.unwrap_or_else(|error| PageData {
                 header: None,
                 context: None,
-                listed_order: false,
+                episodes: None,
                 sections: vec![Section::Message(format!(
                     "Couldn't load this page\n{error}"
                 ))],
@@ -1902,22 +1911,28 @@ impl App {
             let Some(uri) = &page.context else {
                 return;
             };
-            if page.listed_order {
-                let Some(tracks) = page.sections.iter().find_map(|section| match section {
-                    Section::Tracks(tracks) => Some(tracks),
-                    _ => None,
-                }) else {
-                    return;
-                };
-                play_listed(&mut state, &page, tracks, 0)
-            } else {
-                state.started = Some((uri.clone(), page_title(&page)));
-                Request::PlayContext {
+            state.started = Some((uri.clone(), page_title(&page)));
+            let tracks = page.sections.iter().find_map(|section| match section {
+                Section::Tracks(tracks) => Some(tracks),
+                _ => None,
+            });
+            match (page.episodes, tracks) {
+                // A shuffled podcast has nowhere to pick up from.
+                (Some(order), Some(tracks)) if !state.shuffle => Request::PlayShow {
+                    uri: uri.clone(),
+                    episodes: tracks
+                        .tracks
+                        .iter()
+                        .map(|entry| entry.track.item())
+                        .collect(),
+                    order,
+                },
+                _ => Request::PlayContext {
                     uri: uri.clone(),
                     start: Start::Beginning,
                     shuffle: state.shuffle,
                     repeat: state.repeat,
-                }
+                },
             }
         };
         self.request(request);
@@ -1939,7 +1954,7 @@ impl App {
                 return;
             }
             match &page.context {
-                Some(uri) if !page.listed_order => {
+                Some(uri) => {
                     state.started = Some((uri.clone(), page_title(&page)));
                     Request::PlayContext {
                         uri: uri.clone(),
@@ -1948,7 +1963,18 @@ impl App {
                         repeat: state.repeat,
                     }
                 }
-                _ => play_listed(&mut state, &page, tracks, index),
+                None => {
+                    state.started = None;
+                    Request::PlayTracks {
+                        tracks: tracks
+                            .tracks
+                            .iter()
+                            .map(|entry| entry.track.item())
+                            .collect(),
+                        index: index as u32,
+                        repeat: state.repeat,
+                    }
+                }
             }
         };
         self.request(request);
@@ -2710,20 +2736,5 @@ fn section_more(section: &Section) -> Option<&Page> {
         Section::Tracks(tracks) => tracks.more.as_ref(),
         Section::Cards(cards) => cards.more.as_ref(),
         Section::Message(_) => None,
-    }
-}
-
-/// Plays a page's tracks as a plain list from `index`, naming the queue after
-/// the page when the list stands in for its context.
-fn play_listed(state: &mut State, page: &PageData, tracks: &TrackSection, index: usize) -> Request {
-    state.started = page.listed_order.then(|| (String::new(), page_title(page)));
-    Request::PlayTracks {
-        tracks: tracks
-            .tracks
-            .iter()
-            .map(|entry| entry.track.item())
-            .collect(),
-        index: index as u32,
-        repeat: state.repeat,
     }
 }

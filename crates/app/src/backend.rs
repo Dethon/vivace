@@ -13,7 +13,7 @@ use vivace_core::{
 };
 
 use crate::{
-    content::{Page, PageData, Saveable},
+    content::{EpisodeOrder, Page, PageData, Saveable},
     images::{self, ImageKey},
     library,
     media::MediaCommand,
@@ -28,6 +28,9 @@ const RESUME_PLAYING_WITHIN: Duration = Duration::from_secs(60);
 // How soon after being resumed a speaker that drops out is resumed again:
 // Soloist stops a second after a resume that follows a short pause.
 const RESUME_DROPOUT: Duration = Duration::from_secs(3);
+// Episodes whose progress is looked up at once while finding where the user
+// left off in a podcast; the newest few usually tell.
+const PROGRESS_LOOKUPS: usize = 10;
 const WORKER_THREADS: usize = 2;
 const BLOCKING_THREADS: usize = 4;
 const BLOCKING_THREAD_IDLE: Duration = Duration::from_secs(2);
@@ -57,6 +60,13 @@ pub enum Request {
         tracks: Vec<ItemRef>,
         index: u32,
         repeat: Repeat,
+    },
+    /// Plays a podcast from where the user left off among the `episodes`
+    /// its page lists.
+    PlayShow {
+        uri: String,
+        episodes: Vec<ItemRef>,
+        order: EpisodeOrder,
     },
     Play,
     Pause,
@@ -175,6 +185,12 @@ pub enum Update {
     EpisodeProgress {
         episode: Id,
         progress: Progress,
+    },
+    /// The episode a podcast's Play button starts at, to be played in the
+    /// podcast's context.
+    ShowStart {
+        uri: String,
+        episode: ItemRef,
     },
     /// Saving or removing an item failed and must be undone on screen.
     SaveFailed {
@@ -303,6 +319,7 @@ async fn run(
                     queue_sequence: queue_sequence.clone(),
                     remote: RemoteControl::default(),
                     commands: Arc::default(),
+                    plays: Arc::default(),
                     remote_track: None,
                 };
                 match session.serve(&mut requests, &mut events).await {
@@ -345,6 +362,9 @@ struct Session {
     /// Counts the commands sent to other devices, so that a slow recovery
     /// gives way to whatever the user pressed since.
     commands: Arc<AtomicU64>,
+    /// Counts the requests to play something, so that a podcast's starting
+    /// episode, still being looked up, gives way to what was played since.
+    plays: Arc<AtomicU64>,
     /// Track last announced for that device, to resolve each one once.
     remote_track: Option<ItemRef>,
 }
@@ -433,6 +453,12 @@ impl Session {
     }
 
     fn handle(&mut self, request: Request) {
+        if matches!(
+            request,
+            Request::PlayContext { .. } | Request::PlayTracks { .. } | Request::PlayShow { .. }
+        ) {
+            self.plays.fetch_add(1, Ordering::Relaxed);
+        }
         let result = match request {
             // These end the session and are taken by `serve` before this.
             Request::Configure(_) | Request::SignOut | Request::Quit => Ok(()),
@@ -636,6 +662,21 @@ impl Session {
                 }
                 None => self.engine.play_tracks(&tracks, index, repeat),
             },
+            Request::PlayShow {
+                uri,
+                episodes,
+                order,
+            } => {
+                let plays = self.plays.clone();
+                let this = plays.load(Ordering::Relaxed);
+                let updates = self.updates.clone();
+                self.spawn(move |api, _| async move {
+                    let episode = show_start(&api, episodes, order, &updates).await?;
+                    (plays.load(Ordering::Relaxed) == this)
+                        .then_some(Update::ShowStart { uri, episode })
+                });
+                Ok(())
+            }
             Request::Play => self.transport(RemoteCommand::Resume, Engine::play),
             Request::Pause => self.transport(RemoteCommand::Pause, Engine::pause),
             Request::Next => self.transport(RemoteCommand::Next, Engine::next),
@@ -833,6 +874,74 @@ impl RemoteControl {
 }
 
 /// Tells the user why a command failed, if it did.
+/// The episode a podcast's Play button starts at, given those its page
+/// lists: where the user left off (see [`pick_up`]), or the page's first one
+/// when there is nowhere to pick up. Reports each episode's progress on the
+/// way, as rows show it.
+async fn show_start(
+    api: &Api,
+    listed: Vec<ItemRef>,
+    order: EpisodeOrder,
+    updates: &UnboundedSender<Update>,
+) -> Option<ItemRef> {
+    let mut newest_first = listed.clone();
+    if order == EpisodeOrder::OldestFirst {
+        newest_first.reverse();
+    }
+    let mut known = Vec::with_capacity(newest_first.len());
+    for chunk in newest_first.chunks(PROGRESS_LOOKUPS) {
+        let ids: Vec<Id> = chunk.iter().map(|item| item.id).collect();
+        for (&episode, progress) in ids.iter().zip(api.episodes_progress(&ids).await) {
+            if let Some(progress) = progress {
+                _ = updates.send(Update::EpisodeProgress { episode, progress });
+            }
+            // One that couldn't be looked up counts as not started.
+            known.push(progress.unwrap_or_default());
+        }
+        let all = known.len() == newest_first.len();
+        match pick_up(&known, all) {
+            PickUp::At(index) => return Some(newest_first[index]),
+            PickUp::Nowhere => break,
+            PickUp::NeedOlder => {}
+        }
+    }
+    listed.first().copied()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PickUp {
+    At(usize),
+    Nowhere,
+    /// The episodes known so far don't tell; older ones might.
+    NeedOlder,
+}
+
+/// Where the user left off in a podcast, given how far they got in its
+/// episodes, newest first; `all` when no older ones follow. That is the
+/// newest episode they started, unless they finished it; then the one after
+/// it; or, when there is none, the closest one before it not yet finished.
+fn pick_up(newest_first: &[Progress], all: bool) -> PickUp {
+    let undecided = if all {
+        PickUp::Nowhere
+    } else {
+        PickUp::NeedOlder
+    };
+    let Some(heard) = newest_first
+        .iter()
+        .position(|progress| *progress != Progress::NotStarted)
+    else {
+        return undecided;
+    };
+    match newest_first[heard] {
+        Progress::InProgress { .. } => PickUp::At(heard),
+        _ if heard > 0 => PickUp::At(heard - 1),
+        _ => newest_first
+            .iter()
+            .position(|progress| *progress != Progress::Completed)
+            .map_or(undecided, PickUp::At),
+    }
+}
+
 fn failure_notice(result: vivace_core::Result<()>) -> Option<Update> {
     result.err().map(|error| Update::Notice(error.to_string()))
 }
@@ -964,6 +1073,37 @@ mod tests {
         remote.transport_target(RemoteCommand::Resume, start);
         remote.follow(&playing_on(SPEAKER), start);
         remote.follow(&Connect::default(), start + after)
+    }
+
+    const STARTED: Progress = Progress::InProgress { position_ms: 1000 };
+    const NEW: Progress = Progress::NotStarted;
+    const DONE: Progress = Progress::Completed;
+
+    #[test]
+    fn a_podcast_picks_up_after_the_newest_episode_heard() {
+        assert_eq!(pick_up(&[NEW, NEW, DONE, NEW], true), PickUp::At(1));
+        assert_eq!(pick_up(&[NEW, NEW, DONE, STARTED], false), PickUp::At(1));
+    }
+
+    #[test]
+    fn a_podcast_resumes_the_newest_episode_started() {
+        assert_eq!(pick_up(&[NEW, STARTED, DONE], true), PickUp::At(1));
+        assert_eq!(pick_up(&[STARTED, DONE], true), PickUp::At(0));
+    }
+
+    #[test]
+    fn a_podcast_heard_up_to_date_goes_back_to_the_closest_unheard_episode() {
+        assert_eq!(pick_up(&[DONE, DONE, NEW, NEW], true), PickUp::At(2));
+        assert_eq!(pick_up(&[DONE, DONE, STARTED], true), PickUp::At(2));
+        assert_eq!(pick_up(&[DONE, DONE], false), PickUp::NeedOlder);
+        assert_eq!(pick_up(&[DONE, DONE], true), PickUp::Nowhere);
+    }
+
+    #[test]
+    fn a_podcast_never_heard_has_nowhere_to_pick_up() {
+        assert_eq!(pick_up(&[NEW, NEW], false), PickUp::NeedOlder);
+        assert_eq!(pick_up(&[NEW, NEW], true), PickUp::Nowhere);
+        assert_eq!(pick_up(&[], true), PickUp::Nowhere);
     }
 
     #[test]
