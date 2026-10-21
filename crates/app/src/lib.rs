@@ -15,6 +15,7 @@ mod settings;
 pub mod system;
 mod thumbbar;
 mod tray;
+mod updater;
 
 slint::include_modules!();
 

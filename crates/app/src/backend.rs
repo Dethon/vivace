@@ -17,6 +17,7 @@ use crate::{
     images::{self, ImageKey},
     library,
     media::MediaCommand,
+    updater::Found,
 };
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -182,6 +183,12 @@ pub enum Update {
     },
 
     Notice(String),
+    /// What a check for a new version of Vivace found; `asked` when the
+    /// user started it.
+    Release {
+        found: Found,
+        asked: bool,
+    },
 }
 
 pub struct ResolvedQueue {

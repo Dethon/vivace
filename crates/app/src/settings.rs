@@ -31,6 +31,8 @@ pub struct Settings {
     pub notify_song_changes: bool,
     /// How Your Library is ordered.
     pub library_sort: Sort,
+    /// Look for a new version at start and once a day.
+    pub check_for_updates: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +50,7 @@ impl Default for Settings {
             // As in Spotify's Linux app.
             notify_song_changes: true,
             library_sort: Sort::default(),
+            check_for_updates: true,
         }
     }
 }
@@ -170,6 +173,7 @@ mod tests {
             close_to_tray: true,
             notify_song_changes: false,
             library_sort: Sort::Alphabetical,
+            check_for_updates: false,
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&json).unwrap(), settings);

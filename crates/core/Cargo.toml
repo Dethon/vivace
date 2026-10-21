@@ -12,6 +12,8 @@ dirs = "6"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 http = "1"
 http-body-util = "0.1"
+# The version librespot already builds; names its response bodies.
+hyper = "1"
 iana-time-zone = "0.1"
 keyring = "4"
 librespot-protocol = { git = "https://github.com/librespot-org/librespot", rev = "4a005903e078d512456fb008aaa9ba6246881bd9" }
@@ -21,6 +23,8 @@ protobuf = "3"
 rodio = { version = "0.21", default-features = false, features = ["playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Already built for librespot's sign-in; checks downloaded updates.
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 

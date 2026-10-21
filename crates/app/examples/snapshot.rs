@@ -8,6 +8,8 @@
 //! `SNAPSHOT_HOVER=x,y` wiggles the pointer there to show hover state.
 //! `SNAPSHOT_CHAPTERS=1` gives the playing item chapter marks.
 //! `SNAPSHOT_LONG_TITLE=1` gives it a long title and artist list.
+//! `SNAPSHOT_UPDATE=ready` shows the banner for an installer ready to run,
+//! any other value the one for a release to download.
 //! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
 
 use std::rc::Rc;
@@ -19,7 +21,7 @@ use slint::{
     SharedPixelBuffer, VecModel,
 };
 use vivace::{
-    CardData, DeviceIcon, DeviceItem, Devices, Emblem, HeaderData, Library, LibraryItem,
+    AppUpdate, CardData, DeviceIcon, DeviceItem, Devices, Emblem, HeaderData, Library, LibraryItem,
     MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind, Session, SettingsView,
     TrackData,
 };
@@ -296,6 +298,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     settings.set_username("listener".into());
     settings.set_version("0.1.0".into());
     settings.set_data_folder("/home/user/.config/vivace".into());
+    if let Some(update) = std::env::var_os("SNAPSHOT_UPDATE") {
+        let ready = update == "ready";
+        let banner = ui.global::<AppUpdate>();
+        banner.set_version("0.5.0".into());
+        banner.set_ready(ready);
+        banner.set_banner(true);
+        banner.set_status(
+            if ready {
+                "Vivace 0.5.0 is ready to install."
+            } else {
+                "Vivace 0.5.0 is available."
+            }
+            .into(),
+        );
+    }
 
     ui.show()?;
     slint::platform::update_timers_and_animations();

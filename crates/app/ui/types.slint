@@ -213,6 +213,7 @@ export global SettingsView {
     // Whether this system shows a notification for each new song.
     in property <bool> notify-supported;
     in property <bool> notify-song-changes;
+    in property <bool> check-for-updates: true;
     in property <string> username;
     in property <string> version;
     in property <string> data-folder;
@@ -225,7 +226,25 @@ export global SettingsView {
     callback set-start-at-login(bool);
     callback set-close-to-tray(bool);
     callback set-notify-song-changes(bool);
+    callback set-check-for-updates(bool);
     callback sign-out();
+}
+
+// A newer version of Vivace than this one.
+export global AppUpdate {
+    // The new version; empty while there is none.
+    in property <string> version;
+    // Its installer is downloaded, so it can be installed at once.
+    in property <bool> ready;
+    // The banner shows until it is closed.
+    in property <bool> banner;
+    // How the last check went, for the settings page.
+    in property <string> status;
+    in property <bool> checking;
+    callback install();
+    callback open-page();
+    callback dismiss();
+    callback check();
 }
 
 // The one modal question the window can show at a time.

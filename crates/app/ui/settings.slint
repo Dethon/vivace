@@ -1,6 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { SettingsView } from "types.slint";
+import { SettingsView, AppUpdate } from "types.slint";
 
 component Choice inherits Rectangle {
     in property <string> label;
@@ -328,6 +328,51 @@ export component SettingsPage inherits Rectangle {
             Setting {
                 title: "Vivace " + SettingsView.version;
                 detail: "An unofficial client; not affiliated with Spotify. Made with Slint.";
+            }
+
+            Setting {
+                title: "Updates";
+                detail: AppUpdate.checking ? "Checking for updates…" : AppUpdate.status;
+
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 8px;
+
+                    if AppUpdate.version != "": Choice {
+                        label: AppUpdate.ready ? "Restart to update" : "Download " + AppUpdate.version;
+                        selected: true;
+                        clicked => {
+                            if AppUpdate.ready {
+                                AppUpdate.install();
+                            } else {
+                                AppUpdate.open-page();
+                            }
+                        }
+                    }
+
+                    Choice {
+                        label: "Check now";
+                        clicked => {
+                            AppUpdate.check();
+                        }
+                    }
+                }
+            }
+
+            Setting {
+                title: "Check for updates automatically";
+                detail: "Looks for a new version when Vivace starts and once a day.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Toggle {
+                        on: SettingsView.check-for-updates;
+                        toggled => {
+                            SettingsView.set-check-for-updates(!SettingsView.check-for-updates);
+                        }
+                    }
+                }
             }
 
             Setting {

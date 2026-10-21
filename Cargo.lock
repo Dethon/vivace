@@ -7470,6 +7470,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body-util",
+ "hyper",
  "iana-time-zone",
  "keyring",
  "librespot-connect",
@@ -7485,6 +7486,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
 ]

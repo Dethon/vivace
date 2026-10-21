@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog, SettingsView } from "types.slint";
+import { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog, SettingsView, AppUpdate } from "types.slint";
 import { Sidebar } from "sidebar.slint";
 import { TopBar, WindowControls } from "topbar.slint";
 import { PageView } from "page.slint";
@@ -8,8 +8,9 @@ import { QueuePanel } from "queue.slint";
 import { LyricsPanel } from "lyrics.slint";
 import { DialogOverlay } from "dialog.slint";
 import { SettingsPage } from "settings.slint";
+import { UpdateBanner } from "update-banner.slint";
 
-export { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog, SettingsView }
+export { Player, Nav, Library, Queue, LyricsView, Devices, Session, Dialog, SettingsView, AppUpdate }
 
 export component MainWindow inherits Window {
     // Set at startup from the bundled PNG.
@@ -150,6 +151,8 @@ export component MainWindow inherits Window {
                     overflow: elide;
                 }
             }
+
+            if AppUpdate.banner: UpdateBanner { }
 
             PlayerBar { }
         }

@@ -7,6 +7,11 @@
 ;   OUTFILE   where to write the installer
 ;   PUBLISHER (optional) the name shown as publisher in Windows' app list
 ;
+; Vivace updates itself by running a downloaded installer with
+;   /S /relaunch
+; and quitting: the installer then waits for it to close, and opens the new
+; version when done.
+;
 ; Installs for the current user only, so it never asks for administrator
 ; rights. Everything it writes lives under the install directory and HKCU,
 ; and the uninstaller removes exactly that. The user's login and settings,
@@ -49,6 +54,11 @@ VIAddVersionKey "FileVersion" "${VERSION}"
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
+!include "LogicLib.nsh"
+
+; How long a copy of Vivace that is quitting gets to let go of its file:
+; tries, a quarter of a second apart.
+!define WAIT_TRIES 60
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -73,14 +83,22 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; A running copy, which may sit in the notification area, keeps its file
-  ; locked. Report that plainly rather than leave a half-updated install.
+  ; locked. One that is quitting, as when it updates itself, is waited for;
+  ; otherwise report that plainly rather than leave a half-updated install.
   SetOverwrite try
-  ClearErrors
-  File "${DIST}\${EXE}"
-  IfErrors 0 files_ok
-    MessageBox MB_OK|MB_ICONEXCLAMATION "${NAME} is running. Quit it, from its icon by the clock if need be, and run Setup again." /SD IDOK
-    Abort "${NAME} is running."
-  files_ok:
+  StrCpy $R0 0
+  retry:
+    ClearErrors
+    File "${DIST}\${EXE}"
+    ${If} ${Errors}
+      ${If} $R0 < ${WAIT_TRIES}
+        IntOp $R0 $R0 + 1
+        Sleep 250
+        Goto retry
+      ${EndIf}
+      MessageBox MB_OK|MB_ICONEXCLAMATION "${NAME} is running. Quit it, from its icon by the clock if need be, and run Setup again." /SD IDOK
+      Abort "${NAME} is running."
+    ${EndIf}
   SetOverwrite on
 
   File "${DIST}\LICENSE.txt"
@@ -107,6 +125,17 @@ Section "Install"
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" "$0"
 SectionEnd
+
+; The finish page opens Vivace after an install with pages; this does after
+; one Vivace started itself to update.
+Function .onInstSuccess
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/relaunch" $R1
+  ${IfNot} ${Errors}
+    Exec '"$INSTDIR\${EXE}"'
+  ${EndIf}
+FunctionEnd
 
 Section "Uninstall"
   ClearErrors

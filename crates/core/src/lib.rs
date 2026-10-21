@@ -7,6 +7,7 @@ mod engine;
 pub mod model;
 mod output;
 mod progress;
+pub mod release;
 
 use std::time::Duration;
 

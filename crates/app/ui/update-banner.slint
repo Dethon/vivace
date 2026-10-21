@@ -1,0 +1,80 @@
+import { Theme, Icons, IconButton } from "theme.slint";
+import { AppUpdate } from "types.slint";
+
+component BannerButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    callback clicked();
+
+    width: text.preferred-width + 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: root.primary ? (touch.has-hover ? Theme.accent-hover : Theme.accent) : (touch.has-hover ? Theme.surface-active : Theme.surface-hover);
+
+    text := Text {
+        text: root.label;
+        color: root.primary ? Theme.on-accent : Theme.text;
+        font-size: 13px;
+        font-weight: 700;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// Says a new version is out, above the player bar.
+export component UpdateBanner inherits Rectangle {
+    height: 40px;
+    border-radius: Theme.radius;
+    background: Theme.surface;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 6px;
+        spacing: 8px;
+
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            text: AppUpdate.ready ? "Vivace " + AppUpdate.version + " is ready to install." : "Vivace " + AppUpdate.version + " is available.";
+            color: Theme.text;
+            font-size: 13px;
+            font-weight: 600;
+            overflow: elide;
+        }
+
+        if AppUpdate.ready: BannerButton {
+            y: (parent.height - self.height) / 2;
+            label: "What's new";
+            clicked => {
+                AppUpdate.open-page();
+            }
+        }
+
+        BannerButton {
+            y: (parent.height - self.height) / 2;
+            primary: true;
+            label: AppUpdate.ready ? "Restart to update" : "Download";
+            clicked => {
+                if AppUpdate.ready {
+                    AppUpdate.install();
+                } else {
+                    AppUpdate.open-page();
+                }
+            }
+        }
+
+        IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: Icons.close;
+            icon-size: 18px;
+            clicked => {
+                AppUpdate.dismiss();
+            }
+        }
+    }
+}

@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -13,9 +13,9 @@ use vivace_core::{
 };
 
 use crate::{
-    CardData, DeviceIcon, DeviceItem, Devices, Dialog, Emblem as EmblemKind, HeaderData, Library,
-    LibraryItem, LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind, SaveKind,
-    Session, SettingsView, TrackAction, TrackData,
+    AppUpdate, CardData, DeviceIcon, DeviceItem, Devices, Dialog, Emblem as EmblemKind, HeaderData,
+    Library, LibraryItem, LyricsView, MainWindow, Nav, Player, Queue, RepeatMode, Row, RowKind,
+    SaveKind, Session, SettingsView, TrackAction, TrackData,
     backend::{self, Request, ResolvedQueue, Update},
     content::{Card, Dates, Emblem, Page, PageData, Saveable, Section, TrackSection},
     format,
@@ -27,6 +27,7 @@ use crate::{
     settings::Settings,
     system,
     tray::{self, Tray},
+    updater::{self, Available, Found},
 };
 
 /// How long closing waits for the backend to record where an episode was left.
@@ -44,6 +45,12 @@ const THUMBNAIL: u32 = 40;
 const PLAYER_COVER: u32 = 56;
 const CARD_COVER: u32 = 152;
 const HEADER_COVER: u32 = 192;
+// The first look for a new version waits until starting up is done.
+const UPDATE_CHECK_DELAY: Duration = Duration::from_secs(10);
+// How often the clock is read to see whether a look is due: a timer of a
+// whole day would not count the time the computer sleeps.
+const UPDATE_CHECK_TICK: Duration = Duration::from_secs(60 * 60);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub struct App {
     ui: slint::Weak<MainWindow>,
@@ -83,6 +90,15 @@ pub struct App {
     position_shown: Cell<Instant>,
     this: Weak<Self>,
     notice_timer: Timer,
+    /// Look for a new version now and then.
+    check_for_updates: Cell<bool>,
+    /// When a look last got an answer.
+    update_checked: Cell<Option<SystemTime>>,
+    update_timer: Timer,
+    /// The newest release, when it is newer than this copy.
+    available: RefCell<Option<Available>>,
+    /// The version the banner was closed for, or a notification shown for.
+    update_seen: RefCell<Option<String>>,
 }
 
 struct State {
@@ -268,6 +284,11 @@ impl App {
             position_shown: Cell::new(Instant::now()),
             this: app.clone(),
             notice_timer: Timer::default(),
+            check_for_updates: Cell::new(false),
+            update_checked: Cell::new(None),
+            update_timer: Timer::default(),
+            available: RefCell::default(),
+            update_seen: RefCell::default(),
         });
 
         ui.global::<Nav>().set_rows(ModelRc::from(app.rows.clone()));
@@ -277,6 +298,7 @@ impl App {
             .set_items(ModelRc::from(app.queue.clone()));
         app.connect_callbacks(ui);
         app.show_current();
+        app.watch_for_updates();
 
         slint::spawn_local(app.clone().listen(receiver))
             .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
@@ -456,6 +478,28 @@ impl App {
                 }
             }
         });
+        settings.on_set_check_for_updates({
+            let app = Rc::downgrade(self);
+            move |on| {
+                if let Some(app) = app.upgrade() {
+                    app.change_settings(|settings| settings.check_for_updates = on);
+                    app.check_if_due();
+                }
+            }
+        });
+        let update = ui.global::<AppUpdate>();
+        update.on_check(self.handler(|app| app.check_for_update(true)));
+        update.on_install(self.handler(Self::install_update));
+        update.on_open_page(self.handler(Self::open_release_page));
+        update.on_dismiss(self.handler(|app| {
+            let version = app
+                .available
+                .borrow()
+                .as_ref()
+                .map(|available| available.version.clone());
+            *app.update_seen.borrow_mut() = version;
+            app.with_ui(|ui| ui.global::<AppUpdate>().set_banner(false));
+        }));
         settings.on_set_close_to_tray({
             let app = Rc::downgrade(self);
             move |on| {
@@ -919,6 +963,143 @@ impl App {
                 self.notice("Couldn't update your library");
             }
             Update::Notice(message) => self.notice(&message),
+            Update::Release { found, asked } => self.release_found(found, asked),
+        }
+    }
+
+    // ---- new versions ----------------------------------------------------
+
+    /// Looks for a new version shortly after starting and then once a day,
+    /// while the setting is on.
+    fn watch_for_updates(self: &Rc<Self>) {
+        updater::clean_up();
+        let app = Rc::downgrade(self);
+        Timer::single_shot(UPDATE_CHECK_DELAY, move || {
+            if let Some(app) = app.upgrade() {
+                app.check_if_due();
+            }
+        });
+        let app = Rc::downgrade(self);
+        self.update_timer
+            .start(TimerMode::Repeated, UPDATE_CHECK_TICK, move || {
+                if let Some(app) = app.upgrade() {
+                    app.check_if_due();
+                }
+            });
+    }
+
+    fn check_if_due(&self) {
+        if !self.check_for_updates.get() {
+            return;
+        }
+        // A clock set back counts as due.
+        let due = self.update_checked.get().is_none_or(|checked| {
+            !checked
+                .elapsed()
+                .is_ok_and(|elapsed| elapsed < UPDATE_CHECK_INTERVAL)
+        });
+        if due {
+            self.check_for_update(false);
+        }
+    }
+
+    /// Looks for a new version; `asked` when the user did, who then hears
+    /// about a failure too.
+    fn check_for_update(&self, asked: bool) {
+        self.with_ui(|ui| ui.global::<AppUpdate>().set_checking(true));
+        updater::check(self.updates.clone(), asked);
+    }
+
+    fn release_found(&self, found: Found, asked: bool) {
+        let status = match found {
+            Found::UpToDate => {
+                self.update_checked.set(Some(SystemTime::now()));
+                self.available.borrow_mut().take();
+                Some("Vivace is up to date.".to_owned())
+            }
+            Found::Newer(available) => {
+                self.update_checked.set(Some(SystemTime::now()));
+                let status = if available.installer.is_some() {
+                    format!("Vivace {} is ready to install.", available.version)
+                } else {
+                    format!("Vivace {} is available.", available.version)
+                };
+                *self.available.borrow_mut() = Some(available);
+                Some(status)
+            }
+            // Automatic looks fail quietly and try again within the hour.
+            Found::Failed(error) => asked.then(|| format!("Couldn't check for updates: {error}")),
+        };
+        let available = self.available.borrow().clone();
+        let seen = self.update_seen.borrow().clone();
+        let new = available
+            .as_ref()
+            .is_some_and(|available| seen.as_deref() != Some(&available.version));
+        if new && let Some(available) = &available {
+            notify::announce(
+                format!("Vivace {} is available", available.version),
+                "Open Vivace to get it.".to_owned(),
+            );
+        }
+        self.with_ui(|ui| {
+            let update = ui.global::<AppUpdate>();
+            update.set_checking(false);
+            if let Some(status) = status {
+                update.set_status(status.into());
+            }
+            update.set_version(
+                available
+                    .as_ref()
+                    .map(|available| available.version.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            update.set_ready(
+                available
+                    .as_ref()
+                    .is_some_and(|available| available.installer.is_some()),
+            );
+            update.set_banner(new || (update.get_banner() && available.is_some()));
+        });
+        // Notified once; closing the banner keeps it closed for this version.
+        if new {
+            *self.update_seen.borrow_mut() = available.map(|available| available.version);
+        }
+    }
+
+    /// Runs the downloaded installer and quits, so it can replace this copy;
+    /// it opens the new version when it is done.
+    fn install_update(&self) {
+        let installer = self
+            .available
+            .borrow()
+            .as_ref()
+            .and_then(|available| available.installer.clone());
+        let Some(installer) = installer else { return };
+        match updater::install(&installer) {
+            Ok(()) => {
+                log::info!("installing {}", installer.display());
+                _ = slint::quit_event_loop();
+            }
+            Err(error) => {
+                log::warn!("couldn't start {}: {error}", installer.display());
+                self.notice(&format!("Couldn't start the update: {error}"));
+            }
+        }
+    }
+
+    fn open_release_page(&self) {
+        let Some(page) = self
+            .available
+            .borrow()
+            .as_ref()
+            .map(|available| available.page.clone())
+        else {
+            return;
+        };
+        if let Err(error) = open::that_detached(&page) {
+            log::warn!("couldn't open {page}: {error}");
+            self.notice("Couldn't open the release page");
         }
     }
 
@@ -1901,6 +2082,7 @@ impl App {
         self.set_tray(settings.close_to_tray && tray::SUPPORTED);
         self.notify_song_changes
             .set(settings.notify_song_changes && notify::SUPPORTED);
+        self.check_for_updates.set(settings.check_for_updates);
         self.with_ui(|ui| {
             let view = ui.global::<SettingsView>();
             view.set_quality(match settings.quality {
@@ -1920,6 +2102,7 @@ impl App {
             view.set_start_at_login(system::starts_at_login());
             view.set_close_to_tray(settings.close_to_tray && tray::SUPPORTED);
             view.set_notify_song_changes(settings.notify_song_changes);
+            view.set_check_for_updates(settings.check_for_updates);
         });
     }
 
