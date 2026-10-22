@@ -10,6 +10,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use vivace_core::{
     Config, Connect, Device, DeviceKind, Playback, Quality, Repeat, Start, VolumeLevel,
     model::{Chapter, Id, Image, Lyrics, Playlist, Progress, Track},
+    release,
 };
 
 use crate::{
@@ -509,6 +510,7 @@ impl App {
             }
         });
         settings.on_sign_out(self.handler(Self::ask_to_sign_out));
+        settings.on_open_changelog(self.handler(Self::open_changelog));
         nav.on_play_page(self.handler(Self::play_page));
         nav.on_toggle_saved(self.handler(Self::toggle_page_saved));
         nav.on_search({
@@ -1109,6 +1111,13 @@ impl App {
         if let Err(error) = open::that_detached(&page) {
             log::warn!("couldn't open {page}: {error}");
             self.notice("Couldn't open the release page");
+        }
+    }
+
+    fn open_changelog(&self) {
+        if let Err(error) = open::that_detached(release::CHANGELOG) {
+            log::warn!("couldn't open {}: {error}", release::CHANGELOG);
+            self.notice("Couldn't open the changelog");
         }
     }
 

@@ -328,6 +328,17 @@ export component SettingsPage inherits Rectangle {
             Setting {
                 title: "Vivace " + SettingsView.version;
                 detail: "An unofficial client; not affiliated with Spotify. Made with Slint.";
+
+                HorizontalLayout {
+                    alignment: start;
+
+                    Choice {
+                        label: "Changelog";
+                        clicked => {
+                            SettingsView.open-changelog();
+                        }
+                    }
+                }
             }
 
             Setting {

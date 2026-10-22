@@ -18,6 +18,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const LATEST: &str = "https://api.github.com/repos/Dethon/vivace/releases/latest";
+/// Every release with its notes, newest first: Vivace's changelog.
+pub const CHANGELOG: &str = "https://github.com/Dethon/vivace/releases";
 const GITHUB_JSON: &str = "application/vnd.github+json";
 const CHECKSUMS: &str = "SHA256SUMS";
 // Asset links redirect to a download host; a few hops are plenty.
