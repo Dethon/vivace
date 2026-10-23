@@ -213,6 +213,9 @@ pub struct Queue {
 pub enum Event {
     /// The local player moved to another track or episode.
     Item(ItemRef),
+    /// The local player is fetching the current item before it can play;
+    /// `Playback`, `Stopped` or `Unavailable` follows once it is done.
+    Loading,
     Playback(Playback),
     Position(u32),
     Stopped,
@@ -905,6 +908,8 @@ impl Events {
     /// that changed. A track that was preloaded, as at every gapless
     /// change, starts with `Playing` and no `Loading`.
     fn announce(&mut self, event: PlayerEvent) -> Option<Event> {
+        // `Loading` carries the id that was requested, which is the one the
+        // queue and playlists use; `TrackChanged` reports a relinked id.
         let item = match &event {
             PlayerEvent::Loading { track_id, .. }
             | PlayerEvent::Playing { track_id, .. }
@@ -915,8 +920,7 @@ impl Events {
         match item {
             Some(item) if self.current != Some(item) => {
                 self.current = Some(item);
-                // `Loading` converts to the announcement itself.
-                self.pending = converted.filter(|event| *event != Event::Item(item));
+                self.pending = converted;
                 Some(Event::Item(item))
             }
             _ => converted,
@@ -937,11 +941,7 @@ impl Events {
 
 fn player_event(event: PlayerEvent) -> Option<Event> {
     Some(match event {
-        // `Loading` carries the id that was requested, which is the one the
-        // queue and playlists use; `TrackChanged` reports a relinked id.
-        PlayerEvent::Loading { track_id, .. } => {
-            Event::Item(ItemRef::from_uri(&track_id.to_uri())?)
-        }
+        PlayerEvent::Loading { .. } => Event::Loading,
         PlayerEvent::Playing { position_ms, .. } => Event::Playback(Playback {
             playing: true,
             position_ms,

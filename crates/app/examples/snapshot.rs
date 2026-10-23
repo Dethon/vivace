@@ -8,6 +8,7 @@
 //! `SNAPSHOT_HOVER=x,y` wiggles the pointer there to show hover state.
 //! `SNAPSHOT_CHAPTERS=1` gives the playing item chapter marks.
 //! `SNAPSHOT_LONG_TITLE=1` gives it a long title and artist list.
+//! `SNAPSHOT_LOADING=1` shows the player waiting for audio.
 //! `SNAPSHOT_UPDATE=ready` shows the banner for an installer ready to run,
 //! any other value the one for a release to download.
 //! `SNAPSHOT_TIMING=1` also prints how long a full frame takes to draw.
@@ -229,6 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let player = ui.global::<Player>();
     player.set_available(true);
+    player.set_loading(std::env::var_os("SNAPSHOT_LOADING").is_some());
     if std::env::var_os("SNAPSHOT_LONG_TITLE").is_some() {
         player.set_title("Hazbin Guarantee (Trust Us) - From the Prime Original Series".into());
         player.set_artists(

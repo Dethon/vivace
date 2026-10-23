@@ -39,6 +39,15 @@ const MEDIA_ATTACH_INTERVAL: Duration = Duration::from_millis(250);
 const MEDIA_ATTACH_ATTEMPTS: u32 = 20;
 const REMOTE_TICK: Duration = Duration::from_secs(1);
 const REMOTE_VOLUME_DELAY: Duration = Duration::from_millis(300);
+// How long a track may take to start before the player shows it loading;
+// most start well within it, and a spinner for those would only flicker.
+const LOADING_DELAY: Duration = Duration::from_millis(800);
+// Positions arrive every second while playing; this long without one means
+// playback is waiting for audio.
+const STALL_DELAY: Duration = Duration::from_millis(2500);
+// A request to play that has started nothing by then is taken to have
+// failed without a word.
+const PLAY_GIVE_UP: Duration = Duration::from_secs(20);
 // Pages kept for instant back and forward navigation.
 const CACHED_PAGES: usize = 12;
 // Logical edge lengths of artwork, matching the components in `ui/`.
@@ -89,6 +98,14 @@ pub struct App {
     lyrics_timer: Timer,
     /// When the position on screen was last set.
     position_shown: Cell<Instant>,
+    /// Fires when playback is late to get going, or stopped moving.
+    loading_timer: Timer,
+    /// Fires when a request to play has started nothing for too long.
+    play_give_up: Timer,
+    /// Playback is late: something is still loading, or stalled.
+    late: Cell<bool>,
+    /// The connection to Spotify dropped and is being made again.
+    reconnecting: Cell<bool>,
     this: Weak<Self>,
     notice_timer: Timer,
     /// Look for a new version now and then.
@@ -283,6 +300,10 @@ impl App {
             volume_timer: Timer::default(),
             lyrics_timer: Timer::default(),
             position_shown: Cell::new(Instant::now()),
+            loading_timer: Timer::default(),
+            play_give_up: Timer::default(),
+            late: Cell::new(false),
+            reconnecting: Cell::new(false),
             this: app.clone(),
             notice_timer: Timer::default(),
             check_for_updates: Cell::new(false),
@@ -774,8 +795,64 @@ impl App {
     }
 
     fn request(&self, request: Request) {
+        // Spirc says nothing until it has looked up what to play.
+        let plays_here = matches!(
+            request,
+            Request::PlayContext { .. } | Request::PlayTracks { .. } | Request::PlayShow { .. }
+        );
+        if plays_here && self.state.borrow().remote.is_none() {
+            self.expect_progress(LOADING_DELAY);
+            let app = self.this.clone();
+            self.play_give_up
+                .start(TimerMode::SingleShot, PLAY_GIVE_UP, move || {
+                    if let Some(app) = app.upgrade() {
+                        app.progressed(app.state.borrow().playing);
+                    }
+                });
+        }
         // The backend only goes away when the process is exiting.
         _ = self.requests.send(request);
+    }
+
+    // ---- loading indicator -----------------------------------------------
+
+    /// Shows the player loading unless local playback moves `within` that
+    /// time. Another device's playback is not watched.
+    fn expect_progress(&self, within: Duration) {
+        if self.state.borrow().remote.is_some() {
+            return;
+        }
+        let app = self.this.clone();
+        self.loading_timer
+            .start(TimerMode::SingleShot, within, move || {
+                if let Some(app) = app.upgrade() {
+                    app.late.set(true);
+                    app.show_loading();
+                }
+            });
+    }
+
+    /// Local playback moved, or settled; while it plays, it should keep
+    /// moving.
+    fn progressed(&self, playing: bool) {
+        self.loading_timer.stop();
+        self.play_give_up.stop();
+        self.late.set(false);
+        self.show_loading();
+        if playing {
+            self.expect_progress(STALL_DELAY);
+        }
+    }
+
+    fn show_loading(&self) {
+        let loading = self.late.get() || self.reconnecting.get();
+        self.with_ui(|ui| {
+            let player = ui.global::<Player>();
+            // The spinner redraws every frame while it shows.
+            if player.get_loading() != loading {
+                player.set_loading(loading);
+            }
+        });
     }
 
     fn with_ui(&self, action: impl FnOnce(&MainWindow)) {
@@ -798,6 +875,8 @@ impl App {
         match update {
             Update::Connecting => {
                 if self.state.borrow().ever_connected {
+                    self.reconnecting.set(true);
+                    self.progressed(false);
                     self.notice("Reconnecting to Spotify…");
                 } else {
                     self.with_ui(|ui| {
@@ -846,6 +925,8 @@ impl App {
                     }];
                     state.position = 0;
                 }
+                self.reconnecting.set(false);
+                self.progressed(false);
                 self.library.reset(0);
                 self.rows.reset(0);
                 self.with_ui(|ui| {
@@ -862,6 +943,8 @@ impl App {
                 });
                 self.state.borrow_mut().username = username;
                 self.state.borrow_mut().ever_connected = true;
+                self.reconnecting.set(false);
+                self.show_loading();
                 self.with_ui(|ui| ui.global::<Session>().set_connected(true));
                 self.request(Request::Library);
                 self.show_current();
@@ -918,6 +1001,11 @@ impl App {
                 self.refresh_cards();
             }
             Update::NowPlaying(track) => self.now_playing(track),
+            Update::Loading => {
+                // The player has it now, and says when it is done.
+                self.play_give_up.stop();
+                self.expect_progress(LOADING_DELAY);
+            }
             Update::EpisodeProgress { episode, progress } => {
                 self.progress.borrow_mut().insert(episode, Some(progress));
                 self.refresh_track(episode);
@@ -940,18 +1028,23 @@ impl App {
             }) => {
                 self.state.borrow_mut().playing = playing;
                 self.with_ui(|ui| ui.global::<Player>().set_playing(playing));
+                self.progressed(playing);
                 self.show_position(position_ms);
                 if let Some(media) = self.media.borrow_mut().as_mut() {
                     media.set_playback(playing, position_ms);
                 }
             }
             Update::Media(command) => self.media_command(command),
-            Update::Position(position_ms) => self.show_position(position_ms),
+            Update::Position(position_ms) => {
+                self.progressed(self.state.borrow().playing);
+                self.show_position(position_ms);
+            }
             Update::Lyrics { track, lyrics } => self.lyrics_loaded(track, lyrics),
             Update::Chapters { episode, chapters } => self.chapters_loaded(episode, chapters),
             Update::Stopped => {
                 self.state.borrow_mut().playing = false;
                 self.with_ui(|ui| ui.global::<Player>().set_playing(false));
+                self.progressed(false);
                 if let Some(media) = self.media.borrow_mut().as_mut() {
                     let position_ms = self
                         .ui
@@ -973,7 +1066,12 @@ impl App {
                 self.set_saved(item, !saved);
                 self.notice("Couldn't update your library");
             }
-            Update::Notice(message) => self.notice(&message),
+            Update::Notice(message) => {
+                // Most likely what was loading failed; a stall still shows
+                // again soon.
+                self.progressed(self.state.borrow().playing);
+                self.notice(&message);
+            }
             Update::Release { found, asked } => self.release_found(found, asked),
         }
     }
@@ -1160,6 +1258,10 @@ impl App {
                 None if was_remote && !local_active => state.playing = false,
                 None => {}
             }
+        }
+        // Only this computer's playback is watched for loading.
+        if connect.remote.is_some() {
+            self.progressed(false);
         }
 
         let playing = self.state.borrow().playing;

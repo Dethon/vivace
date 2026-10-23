@@ -151,6 +151,8 @@ pub enum Update {
         image: Option<Image>,
     },
     NowPlaying(Track),
+    /// This computer is fetching what it plays next.
+    Loading,
     Playback(Playback),
     Position(u32),
     Stopped,
@@ -751,6 +753,7 @@ impl Session {
     fn forward(&mut self, event: Event) {
         match event {
             Event::Item(item) => self.announce(item),
+            Event::Loading => self.send(Update::Loading),
             Event::Queue(queue) => {
                 let sequence = self.next_queue_sequence();
                 self.spawn(move |api, _| async move { resolve_queue(&api, queue, sequence).await });

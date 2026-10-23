@@ -7,6 +7,7 @@
 //!   cli play <context uri> [seconds]     plays, queues a track, skips and shuffles
 //!   cli queue-test <context uri> <track uri> <queued track uri>     plays the context, then the track on its own, then queues the other, printing each queue reported
 //!   cli remote [seconds]     pauses, resumes and takes over whatever another device plays
+//!   cli loading-test     plays Liked Songs and skips once, checking each start says it is loading before it plays
 //!   cli placeholder-test     has another client's play command start a plain list on this device, as Spotify sends it
 //!   cli remote-pause <device id>     pauses another device
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
@@ -304,6 +305,23 @@ async fn run() -> Fallible<()> {
                 }
                 None => println!("FAIL: nothing played"),
             }
+        }
+        ["loading-test"] => {
+            // Each start, from a play and from a skip, should announce the
+            // item, say it is loading and then play, in that order.
+            engine.play_context(
+                &engine.liked_songs_uri(),
+                Start::Index(3),
+                false,
+                Repeat::Off,
+            )?;
+            let mut passed = loading_then_playing(&mut events).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            println!("-> next");
+            engine.next()?;
+            passed &= loading_then_playing(&mut events).await;
+            engine.pause()?;
+            println!("{}", if passed { "PASS" } else { "FAIL" });
         }
         ["remote-pause", device] => {
             println!("{:?}", api.remote(device, RemoteCommand::Pause).await);
@@ -1326,6 +1344,36 @@ async fn wait_for(
                 }
                 if matches(&event) {
                     return Some(event);
+                }
+            }
+        }
+    }
+}
+
+/// Waits for playback to start, printing when each event came, and says
+/// whether `Loading` came between the item's announcement and playing.
+async fn loading_then_playing(events: &mut Events) -> bool {
+    let started = Instant::now();
+    let (mut item, mut loading) = (false, false);
+    let deadline = tokio::time::sleep(Duration::from_secs(20));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => {
+                println!("nothing played");
+                return false;
+            }
+            event = events.recv() => {
+                let Some(event) = event else { return false };
+                match &event {
+                    Event::Queue(_) | Event::Connect(_) | Event::Position(_) => continue,
+                    event => println!("{:>5} ms {event:?}", started.elapsed().as_millis()),
+                }
+                match event {
+                    Event::Item(_) => (item, loading) = (true, false),
+                    Event::Loading => loading = item,
+                    Event::Playback(Playback { playing: true, .. }) => return item && loading,
+                    _ => {}
                 }
             }
         }

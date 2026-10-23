@@ -15,11 +15,15 @@
 //! With `LIVE_REMOTE=<device name>` it plays Liked Songs, moves playback to
 //! that device from the device list, then pauses and plays it from the player
 //! bar, printing what the bar shows after each step. It plays on that device.
+//! With `LIVE_LOADING=1` it plays a track, holds up its audio for a few
+//! seconds and reconnects through a settings change, printing each time the
+//! player starts or stops showing it is loading.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -49,6 +53,11 @@ const FOLLOW_BUTTON: (f32, f32) = (671.0, 255.0);
 // The visible part of the settings page's device name field.
 const DEVICE_NAME_FIELD: (f32, f32) = (500.0, 670.0);
 const HEIGHT: u32 = 800;
+// How long the sink holds up playback when asked to stall.
+const STALL: Duration = Duration::from_secs(5);
+
+// Makes the sink's next write hang, as audio that has not arrived does.
+static STALL_NEXT_WRITE: AtomicBool = AtomicBool::new(false);
 
 enum Event {
     Quit,
@@ -128,6 +137,11 @@ impl Sink for Silence {
     }
 
     fn write(&mut self, packet: AudioPacket, _: &mut Converter) -> SinkResult<()> {
+        if STALL_NEXT_WRITE.swap(false, Ordering::Relaxed) {
+            std::thread::sleep(STALL);
+            // Playback goes on from here at its own pace.
+            *self = Self::default();
+        }
         let started = *self.started.get_or_insert_with(Instant::now);
         self.samples += packet.samples().map_or(0, |samples| samples.len() as u64);
         let due =
@@ -575,6 +589,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         ));
         steps.push(("i10-checked", 500, Box::new(print_own_device)));
+    }
+
+    if std::env::var_os("LIVE_LOADING").is_some() {
+        // Home, the playlist and playing its third track.
+        steps.truncate(3);
+        steps.push((
+            "l4-stalled",
+            4000,
+            Box::new(|_| STALL_NEXT_WRITE.store(true, Ordering::Relaxed)),
+        ));
+        steps.push(("l5-recovered", 5000, Box::new(|_| {})));
+        steps.push((
+            "l6-reconnected",
+            8000,
+            Box::new(|ui| ui.global::<SettingsView>().invoke_set_quality(1)),
+        ));
+        steps.push((
+            "l7-paused",
+            6000,
+            Box::new(|ui| {
+                ui.global::<SettingsView>().invoke_set_quality(2);
+            }),
+        ));
+        steps.push((
+            "l8-end",
+            1000,
+            Box::new(|ui| ui.global::<Player>().invoke_toggle()),
+        ));
+        let (ui, started) = (ui.as_weak(), Instant::now());
+        let shown = Cell::new(false);
+        let watcher = slint::Timer::default();
+        watcher.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(50),
+            move || {
+                let Some(ui) = ui.upgrade() else { return };
+                let loading = ui.global::<Player>().get_loading();
+                if loading != shown.replace(loading) {
+                    println!("{:>6} ms loading: {loading}", started.elapsed().as_millis());
+                }
+            },
+        );
+        std::mem::forget(watcher);
     }
 
     if std::env::var_os("LIVE_SETTINGS").is_some() {

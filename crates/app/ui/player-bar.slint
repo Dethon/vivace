@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, Icons, Icon, IconButton, Cover, Bar } from "theme.slint";
+import { Theme, Icons, Icon, IconButton, Cover, Bar, Spinner } from "theme.slint";
 import { Player, Queue, LyricsView, Devices, DeviceItem, DeviceIcon, RepeatMode } from "types.slint";
 
 component DeviceRow inherits Rectangle {
@@ -181,14 +181,23 @@ export component PlayerBar inherits Rectangle {
             Rectangle {
                 width: 36px;
                 height: 36px;
-                border-radius: 18px;
-                background: toggle.has-hover ? Theme.accent-hover : Theme.text;
-                opacity: Player.available ? 1 : 0.35;
 
-                Icon {
-                    path: Player.playing ? Icons.pause : Icons.play;
-                    size: 22px;
-                    tint: Theme.on-accent;
+                Rectangle {
+                    border-radius: 18px;
+                    background: toggle.has-hover ? Theme.accent-hover : Theme.text;
+                    opacity: Player.available ? 1 : 0.35;
+
+                    Icon {
+                        path: Player.playing ? Icons.pause : Icons.play;
+                        size: 22px;
+                        tint: Theme.on-accent;
+                    }
+                }
+
+                // A ring around the button, outside the layout's sizes.
+                if Player.loading: Spinner {
+                    size: 44px;
+                    thickness: 2px;
                 }
 
                 toggle := TouchArea {

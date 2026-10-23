@@ -104,6 +104,8 @@ export global Player {
     in property <string> artists;
     in property <image> cover;
     in property <bool> playing;
+    // Waiting for audio, or for the connection to Spotify to come back.
+    in property <bool> loading;
     // In Liked Songs, or for an episode in Your Episodes.
     in property <bool> liked;
     in property <bool> episode;
