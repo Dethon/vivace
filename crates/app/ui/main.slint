@@ -22,7 +22,9 @@ export component MainWindow inherits Window {
     preferred-height: 760px;
     min-width: 640px;
     min-height: 420px;
-    background: Theme.background;
+    // Flipped to repaint the whole window when Windows asks (see repaint.rs).
+    in-out property <bool> repaint;
+    background: self.repaint ? Theme.background-nudged : Theme.background;
     // The top bar stands in for the title bar, with its own window controls.
     no-frame: true;
     resize-border-width: self.maximized ? 0 : 6px;

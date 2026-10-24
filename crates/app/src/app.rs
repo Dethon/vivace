@@ -319,6 +319,7 @@ impl App {
         ui.global::<Queue>()
             .set_items(ModelRc::from(app.queue.clone()));
         app.connect_callbacks(ui);
+        crate::repaint::install(ui);
         app.show_current();
         app.watch_for_updates();
 

@@ -2,6 +2,8 @@
 
 export global Theme {
     out property <color> background: #0d0e12;
+    // A shade off the background, to make Slint repaint the whole window.
+    out property <color> background-nudged: #0d0e13;
     out property <color> surface: #15161c;
     out property <color> surface-hover: #1d1f27;
     out property <color> surface-active: #282b36;

@@ -11,6 +11,7 @@ mod logging;
 mod media;
 mod models;
 pub mod notify;
+mod repaint;
 mod settings;
 pub mod system;
 mod thumbbar;
