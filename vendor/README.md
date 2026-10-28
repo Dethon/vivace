@@ -103,9 +103,20 @@ throughput and holds each response in memory before writing it to disk, which
 on a fast connection means a whole song, or tens of megabytes of a long
 podcast episode, sitting in RAM at once.
 
+## librespot-playback
+
+A copy of `playback/` from the same commit, also wired in through `[patch]`.
+
+Local change, marked `vivace:` in `src/player.rs`: when Spotify refuses the
+key for a file, the track fails at once unless the file starts like an
+unencrypted file of its format (`OggS`, an ID3 tag or MPEG frame sync,
+`fLaC`). Upstream decoded it anyway; the decoder searched the whole encrypted
+file for a frame, logging thousands of "skipping junk" lines and often
+running into the load timeout before the player moved on.
+
 ## Updating
 
 Bump the `rev` of the librespot dependencies in `crates/core/Cargo.toml` and
-in both vendored `Cargo.toml` files, copy the new `connect/src` and
-`audio/src` over the vendored ones, and reapply the changes above. Drop a
-vendored crate once upstream no longer needs its changes.
+in the vendored `Cargo.toml` files, copy the new `connect/src`, `audio/src`
+and `playback/src` over the vendored ones, and reapply the changes above.
+Drop a vendored crate once upstream no longer needs its changes.

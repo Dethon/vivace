@@ -3542,7 +3542,6 @@ dependencies = [
 [[package]]
 name = "librespot-playback"
 version = "0.8.0"
-source = "git+https://github.com/librespot-org/librespot?rev=4a005903e078d512456fb008aaa9ba6246881bd9#4a005903e078d512456fb008aaa9ba6246881bd9"
 dependencies = [
  "cpal",
  "form_urlencoded",
