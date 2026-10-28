@@ -510,6 +510,8 @@ impl Engine {
             pending: None,
             device_id: session.device_id().into(),
             last: last.clone(),
+            session: session.clone(),
+            account_described: false,
             _player: player,
         };
         let (volume, settled) = watch::channel(initial_volume);
@@ -844,6 +846,9 @@ pub struct Events {
     pending: Option<Event>,
     device_id: Box<str>,
     last: Arc<Mutex<LastPlayed>>,
+    // For describing the account once a track turns out unplayable.
+    session: Session,
+    account_described: bool,
     // Keeps the event channel open for as long as events are being read.
     _player: Arc<Player>,
 }
@@ -916,6 +921,9 @@ impl Events {
             | PlayerEvent::Paused { track_id, .. } => ItemRef::from_uri(&track_id.to_uri()),
             _ => None,
         };
+        if matches!(event, PlayerEvent::Unavailable { .. }) {
+            self.describe_account();
+        }
         let converted = player_event(event);
         match item {
             Some(item) if self.current != Some(item) => {
@@ -925,6 +933,31 @@ impl Events {
             }
             _ => converted,
         }
+    }
+
+    /// Logs, once per session, what Spotify says the account may play. A
+    /// track Spotify refuses the key for is reported only as unavailable,
+    /// so these are the clues to why when every track fails.
+    fn describe_account(&mut self) {
+        if std::mem::replace(&mut self.account_described, true) {
+            return;
+        }
+        let attributes = self.session.user_data().attributes;
+        let attribute = |key: &str| attributes.get(key).map_or("-", String::as_str);
+        log::warn!(
+            "a track is unavailable; account: type {}, catalogue {}, plan {:?}, member {}, \
+             license {}, streaming {}, on-demand {}, child restrictions {}, payments locked {}, country {}",
+            attribute("type"),
+            attribute("catalogue"),
+            attribute("name"),
+            attribute("multiuserplan-member-type"),
+            attribute("player-license"),
+            attribute("streaming"),
+            attribute("on-demand"),
+            attribute("apply-child-content-restrictions"),
+            attribute("payments-locked-state"),
+            self.session.country(),
+        );
     }
 
     fn connect(&self, cluster: &Cluster) -> Event {
