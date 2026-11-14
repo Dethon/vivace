@@ -414,7 +414,7 @@ impl Session {
                         return Ended::Lost(Lost {
                             session_id: self.engine.session_id(),
                             playing_at: self.engine.playing_at(),
-                            left_off: self.engine.left_off(),
+                            left_off: self.engine.last_played(),
                         });
                     }
                     Some(event) => self.forward(event),

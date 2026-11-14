@@ -19,7 +19,7 @@
 //!   cli item <track or episode uri>     prints a track's or episode's metadata
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id|paused]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on (or, paused, that play starts it again where it stopped)
-//!   cli idle-test [transfer|drop] [list]     plays Liked Songs (or, with `list`, its first tracks as a plain list), pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play; or, once a dropped connection is back, play) starts it again where it was
+//!   cli idle-test [transfer|drop|elsewhere] [list]     plays Liked Songs (or, with `list`, its first tracks as a plain list), pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play; or, once a dropped connection is back, play) starts it again where it was; `elsewhere [<show id> <episode id>]` first plays and pauses other tracks (or that episode in its show) on a second device, which also loses playback, then drops the connection, and checks play carries on with what that device left
 //!   cli settings-test [paused]     plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
@@ -85,7 +85,11 @@ async fn run() -> Fallible<()> {
     if args.first() == Some(&"idle-test") {
         let list = args.contains(&"list");
         let mode = args.get(1).copied().filter(|mode| *mode != "list");
-        return idle_test(config, mode, list).await;
+        let elsewhere = match args.as_slice() {
+            [_, "elsewhere", show, episode, ..] => Some((*show, *episode)),
+            _ => None,
+        };
+        return idle_test(config, mode, list, elsewhere).await;
     }
     if let ["speaker-test", device, rest @ ..] = args.as_slice() {
         return speaker_test(config, device, rest.first().copied()).await;
@@ -965,7 +969,7 @@ async fn drop_test(mut config: Config, episode: Option<&str>) -> Fallible<()> {
     config.resume = Some(Resume {
         session_id: engine.session_id(),
         play: engine.playing_at().is_some(),
-        left_off: engine.left_off(),
+        left_off: engine.last_played(),
     });
     drop((engine, events));
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1005,7 +1009,7 @@ async fn drop_paused_test(mut config: Config) -> Fallible<()> {
     config.resume = Some(Resume {
         session_id: engine.session_id(),
         play: false,
-        left_off: engine.left_off(),
+        left_off: engine.last_played(),
     });
     drop((engine, events));
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1127,7 +1131,12 @@ async fn watch_connect(events: &mut Events, connect: &mut Option<Connect>, secon
     }
 }
 
-async fn idle_test(mut config: Config, mode: Option<&str>, list: bool) -> Fallible<()> {
+async fn idle_test(
+    mut config: Config,
+    mode: Option<&str>,
+    list: bool,
+    elsewhere: Option<(&str, &str)>,
+) -> Fallible<()> {
     // The app keeps its device id across reconnects.
     config.persistent_device = true;
     let (mut engine, mut events) = Engine::connect(config.clone()).await?;
@@ -1144,14 +1153,19 @@ async fn idle_test(mut config: Config, mode: Option<&str>, list: bool) -> Fallib
     } else {
         play_liked(&engine)?;
     }
-    let item = started(&mut events).await?;
+    let mut item = started(&mut events).await?;
     playing_past(&mut events, 8000).await?;
-    let paused_at = pause(&engine, &mut events).await?;
+    let mut paused_at = pause(&engine, &mut events).await?;
     println!("-> paused {item:?} at {paused_at} ms; losing playback");
     engine.lose_playback()?;
     wait_for(&mut events, 3, |_| false).await;
 
-    if mode == Some("drop") {
+    if mode == Some("elsewhere") {
+        (item, paused_at) = play_elsewhere(&config, elsewhere).await?;
+        // This computer follows the other device's playback meanwhile.
+        wait_for(&mut events, 3, |_| false).await;
+    }
+    if matches!(mode, Some("drop" | "elsewhere")) {
         println!("-> dropping the connection");
         engine.drop_connection();
         if wait_for(&mut events, 20, |event| *event == Event::Disconnected)
@@ -1165,7 +1179,7 @@ async fn idle_test(mut config: Config, mode: Option<&str>, list: bool) -> Fallib
         config.resume = Some(Resume {
             session_id: "forgotten".into(),
             play: false,
-            left_off: engine.left_off(),
+            left_off: engine.last_played(),
         });
         drop((engine, events));
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -1218,6 +1232,48 @@ async fn idle_test(mut config: Config, mode: Option<&str>, list: bool) -> Fallib
         None => println!("FAIL: play did nothing"),
     }
     Ok(())
+}
+
+/// Plays something else on a second device (other liked tracks, or an
+/// episode in its show's context), pauses it there and lets Spotify take
+/// playback from that device too, leaving none active; says what it played
+/// and where it stopped.
+async fn play_elsewhere(
+    config: &Config,
+    episode: Option<(&str, &str)>,
+) -> Fallible<(ItemRef, u32)> {
+    let other = Config {
+        device_name: format!("{} elsewhere", config.device_name),
+        persistent_device: false,
+        resume: None,
+        ..config.clone()
+    };
+    let (engine, mut events) = Engine::connect(other).await?;
+    if let Some((show, episode)) = episode {
+        let episode = ItemRef::episode(Id::from_base62(episode)?);
+        engine.play_context(
+            &format!("spotify:show:{show}"),
+            Start::Item(episode),
+            false,
+            Repeat::Off,
+        )?;
+    } else {
+        let liked = engine.api().saved().await?.tracks;
+        let tracks: Vec<ItemRef> = liked
+            .iter()
+            .skip(1)
+            .take(10)
+            .map(|saved| ItemRef::track(saved.id))
+            .collect();
+        engine.play_tracks(&tracks, 0, Repeat::Off)?;
+    }
+    let item = started(&mut events).await?;
+    playing_past(&mut events, 6000).await?;
+    let paused_at = pause(&engine, &mut events).await?;
+    println!("-> another device paused {item:?} at {paused_at} ms; losing playback there");
+    engine.lose_playback()?;
+    wait_for(&mut events, 3, |_| false).await;
+    Ok((item, paused_at))
 }
 
 async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {

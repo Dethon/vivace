@@ -21,7 +21,7 @@ use librespot_protocol::connect::{Cluster, ClusterUpdate};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
-    Api, Connect, Output, Result, auth,
+    Api, Connect, Output, Remote, Result, auth,
     model::{Id, ItemRef, Kind},
     progress::{self, Recorder, StartPositions},
 };
@@ -253,12 +253,19 @@ pub struct LeftOff {
 struct LastPlayed {
     /// This computer is the account's active device.
     active: bool,
-    /// Forgotten when another device plays, so that play does not bring
-    /// back something older than what the user listened to there.
+    /// Replaced by what another device plays, so that play goes on with
+    /// what the user listened to there, as the player bar still shows it
+    /// once that device is gone, rather than something older.
     queue: Option<Queue>,
     position_ms: u32,
     /// When `position_ms` was reported.
     position_at: Option<Instant>,
+    /// Another device has the account's playback. What it plays is
+    /// remembered, but not taken from it.
+    elsewhere: bool,
+    /// While another device plays: the length of its item, which its
+    /// position runs on to without further reports.
+    remote_playing: Option<u32>,
     /// When this computer was last seen playing, while it is. Wall-clock
     /// time, which goes on while the computer sleeps.
     playing_at: Option<SystemTime>,
@@ -293,9 +300,29 @@ impl LastPlayed {
             Event::Shuffle(shuffle) => self.shuffle = *shuffle,
             Event::Repeat(repeat) => self.repeat = *repeat,
             Event::Queue(queue) if queue.current.is_some() => self.queue = Some(queue.clone()),
-            Event::Connect(connect) if connect.remote.is_some() => self.queue = None,
+            Event::Connect(connect) => self.follow(connect.remote.as_ref()),
             _ => {}
         }
+    }
+
+    /// Keeps up with another device's playback, the account's latest.
+    fn follow(&mut self, remote: Option<&Remote>) {
+        self.elsewhere = remote.is_some();
+        let Some(remote) = remote else {
+            // That device is gone, maybe playing on unreported.
+            if let (Some(duration_ms), Some(at)) = (self.remote_playing.take(), self.position_at) {
+                let since = at.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+                self.position_ms = self.position_ms.saturating_add(since).min(duration_ms);
+            }
+            return;
+        };
+        self.queue = Some(remote.queue.clone());
+        self.position_ms = remote.position_ms;
+        self.position_at = Some(Instant::now());
+        self.remote_playing = remote.playing.then_some(remote.duration_ms);
+        self.playing_at = None;
+        self.shuffle = remote.shuffle;
+        self.repeat = remote.repeat;
     }
 
     /// Takes on where a previous session left off, as the player would
@@ -309,6 +336,8 @@ impl LastPlayed {
             playing_at: left_off.playing.then(SystemTime::now),
             shuffle: left_off.shuffle,
             repeat: left_off.repeat,
+            elsewhere: false,
+            remote_playing: None,
         };
     }
 
@@ -642,7 +671,7 @@ impl Engine {
     fn play_again(&self, start_playing: bool) -> Result<bool> {
         let left_off = {
             let mut last = LastPlayed::shared(&self.last);
-            if last.active {
+            if last.active || last.elsewhere {
                 return Ok(false);
             }
             let Some(left_off) = last.left_off() else {
@@ -660,6 +689,18 @@ impl Engine {
     /// Where this computer's playback stands, if it has any, for
     /// [`Engine::pick_up`] in the next session.
     pub fn left_off(&self) -> Option<LeftOff> {
+        let last = LastPlayed::shared(&self.last);
+        if last.elsewhere {
+            return None;
+        }
+        last.left_off()
+    }
+
+    /// What play would start again on this computer: its own playback, or
+    /// what another device played last, even while that device has it.
+    /// For [`Resume::left_off`] after a dropped connection, where it is
+    /// started only once no device has playback.
+    pub fn last_played(&self) -> Option<LeftOff> {
         LastPlayed::shared(&self.last).left_off()
     }
 
@@ -1039,4 +1080,72 @@ fn rejects_credentials(error: &librespot_core::Error) -> bool {
 
 fn episode(item: ItemRef) -> Option<Id> {
     (item.kind == Kind::Episode).then_some(item.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue(id: &str) -> Queue {
+        Queue {
+            context_uri: "spotify:show:5tecNDCni3nUBIT0eNMLtt".into(),
+            current: Some(ItemRef::episode(Id::from_base62(id).unwrap())),
+            next: Vec::new(),
+        }
+    }
+
+    fn remote(queue: Queue, playing: bool, position_ms: u32) -> Event {
+        Event::Connect(Connect {
+            devices: Vec::new(),
+            remote: Some(Remote {
+                device: "phone".into(),
+                queue,
+                playing,
+                position_ms,
+                duration_ms: 3_600_000,
+                shuffle: false,
+                repeat: Repeat::Off,
+                volume: 1.0,
+            }),
+        })
+    }
+
+    #[test]
+    fn play_goes_on_with_what_another_device_left() {
+        let mut last = LastPlayed::default();
+        last.remember(&Event::Queue(queue("4uLU6hMCjMI75M1A2tKUQC")));
+        last.remember(&Event::Position(10_000));
+        let elsewhere = queue("2bwOeSrKTowqwfaL9Nmbo1");
+        last.remember(&remote(elsewhere.clone(), false, 42_000));
+        // Spotify takes playback from that device too.
+        last.remember(&Event::Connect(Connect::default()));
+
+        let left_off = last.left_off().expect("something to play");
+        assert_eq!(left_off.queue, elsewhere);
+        assert_eq!(left_off.position_ms, 42_000);
+        assert!(!left_off.playing);
+    }
+
+    #[test]
+    fn a_device_gone_while_playing_has_played_on() {
+        let mut last = LastPlayed::default();
+        last.remember(&remote(queue("2bwOeSrKTowqwfaL9Nmbo1"), true, 42_000));
+        last.position_at = Some(Instant::now() - Duration::from_secs(5));
+        last.remember(&Event::Connect(Connect::default()));
+
+        let position_ms = last.left_off().expect("something to play").position_ms;
+        assert!((47_000..48_000).contains(&position_ms), "{position_ms}");
+    }
+
+    #[test]
+    fn what_another_device_still_has_stays_there() {
+        let mut last = LastPlayed::default();
+        last.remember(&Event::Queue(queue("4uLU6hMCjMI75M1A2tKUQC")));
+        last.remember(&remote(queue("2bwOeSrKTowqwfaL9Nmbo1"), false, 42_000));
+        assert!(last.elsewhere);
+        // Carried over a dropped connection, it waits for that device to go.
+        let mut next = LastPlayed::default();
+        next.carry(&last.left_off().expect("something to carry"));
+        assert!(!next.active && !next.elsewhere);
+    }
 }
