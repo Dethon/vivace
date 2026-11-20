@@ -13,6 +13,7 @@ mod models;
 pub mod notify;
 mod repaint;
 mod settings;
+mod skip;
 pub mod system;
 mod thumbbar;
 mod tray;

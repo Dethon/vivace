@@ -26,6 +26,7 @@ use crate::{
     models::LazyModel,
     notify,
     settings::Settings,
+    skip::Skip,
     system,
     tray::{self, Tray},
     updater::{self, Available, Found},
@@ -39,6 +40,8 @@ const MEDIA_ATTACH_INTERVAL: Duration = Duration::from_millis(250);
 const MEDIA_ATTACH_ATTEMPTS: u32 = 20;
 const REMOTE_TICK: Duration = Duration::from_secs(1);
 const REMOTE_VOLUME_DELAY: Duration = Duration::from_millis(300);
+/// How long the skip buttons rest before the presses so far are sent as one seek.
+const SKIP_DELAY: Duration = Duration::from_millis(300);
 // How long a track may take to start before the player shows it loading;
 // most start well within it, and a spinner for those would only flicker.
 const LOADING_DELAY: Duration = Duration::from_millis(800);
@@ -96,6 +99,10 @@ pub struct App {
     volume_timer: Timer,
     /// Fires when the next lyric line is due.
     lyrics_timer: Timer,
+    /// Skip presses adding up, or on their way.
+    skip: RefCell<Skip>,
+    /// Sends the skip once the presses rest.
+    skip_timer: Timer,
     /// When the position on screen was last set.
     position_shown: Cell<Instant>,
     /// Fires when playback is late to get going, or stopped moving.
@@ -299,6 +306,8 @@ impl App {
             remote_timer: Timer::default(),
             volume_timer: Timer::default(),
             lyrics_timer: Timer::default(),
+            skip: RefCell::default(),
+            skip_timer: Timer::default(),
             position_shown: Cell::new(Instant::now()),
             loading_timer: Timer::default(),
             play_give_up: Timer::default(),
@@ -760,9 +769,15 @@ impl App {
             let app = Rc::downgrade(self);
             move |position_ms| {
                 if let Some(app) = app.upgrade() {
-                    let position_ms = position_ms.max(0) as u32;
-                    app.show_position(position_ms);
-                    app.request(Request::Seek(position_ms));
+                    app.seek_to(position_ms.max(0) as u32);
+                }
+            }
+        });
+        player.on_skip({
+            let app = Rc::downgrade(self);
+            move |offset_ms| {
+                if let Some(app) = app.upgrade() {
+                    app.skip_by(i64::from(offset_ms));
                 }
             }
         });
@@ -796,6 +811,18 @@ impl App {
     }
 
     fn request(&self, request: Request) {
+        // A skip still adding up would land on whatever plays next.
+        if matches!(
+            request,
+            Request::PlayContext { .. }
+                | Request::PlayTracks { .. }
+                | Request::PlayShow { .. }
+                | Request::Next
+                | Request::Previous
+                | Request::Transfer { .. }
+        ) {
+            self.cancel_skip();
+        }
         // Spirc says nothing until it has looked up what to play.
         let plays_here = matches!(
             request,
@@ -1030,7 +1057,7 @@ impl App {
                 self.state.borrow_mut().playing = playing;
                 self.with_ui(|ui| ui.global::<Player>().set_playing(playing));
                 self.progressed(playing);
-                self.show_position(position_ms);
+                let position_ms = self.show_reported(position_ms);
                 if let Some(media) = self.media.borrow_mut().as_mut() {
                     media.set_playback(playing, position_ms);
                 }
@@ -1038,7 +1065,7 @@ impl App {
             Update::Media(command) => self.media_command(command),
             Update::Position(position_ms) => {
                 self.progressed(self.state.borrow().playing);
-                self.show_position(position_ms);
+                self.show_reported(position_ms);
             }
             Update::Lyrics { track, lyrics } => self.lyrics_loaded(track, lyrics),
             Update::Chapters { episode, chapters } => self.chapters_loaded(episode, chapters),
@@ -1279,11 +1306,11 @@ impl App {
             }
         });
         if let Some(remote) = &connect.remote {
-            self.show_position(remote.position_ms);
+            let position_ms = self.show_reported(remote.position_ms);
             self.set_shuffle(remote.shuffle);
             self.set_repeat(remote.repeat);
             if let Some(media) = self.media.borrow_mut().as_mut() {
-                media.set_playback(remote.playing, remote.position_ms);
+                media.set_playback(remote.playing, position_ms);
             }
         }
 
@@ -1295,6 +1322,10 @@ impl App {
                 .start(TimerMode::Repeated, REMOTE_TICK, move || {
                     let Some(app) = app.upgrade() else { return };
                     let Some(ui) = app.ui.upgrade() else { return };
+                    // The skip's target stays on screen until the device gets there.
+                    if app.skip.borrow().holds(Instant::now()) {
+                        return;
+                    }
                     let player = ui.global::<Player>();
                     let position = player.get_position_ms() + REMOTE_TICK.as_millis() as i32;
                     app.show_position(position.clamp(0, player.get_duration_ms()) as u32);
@@ -1343,11 +1374,6 @@ impl App {
 
     fn media_command(&self, command: MediaCommand) {
         let playing = self.state.borrow().playing;
-        let seek = |position_ms: i64| {
-            let position_ms = position_ms.clamp(0, i64::from(i32::MAX)) as u32;
-            self.show_position(position_ms);
-            Request::Seek(position_ms)
-        };
         self.request(match command {
             MediaCommand::Play => Request::Play,
             MediaCommand::Pause => Request::Pause,
@@ -1356,16 +1382,74 @@ impl App {
             MediaCommand::Next => Request::Next,
             MediaCommand::Previous => Request::Previous,
             MediaCommand::SeekTo(position) => {
-                seek(i64::try_from(position.as_millis()).unwrap_or(i64::MAX))
+                let position_ms = position.as_millis().min(i32::MAX as u128) as u32;
+                return self.seek_to(position_ms);
             }
-            MediaCommand::SeekBy(offset_ms) => {
-                let position_ms = self
-                    .ui
-                    .upgrade()
-                    .map_or(0, |ui| ui.global::<Player>().get_position_ms());
-                seek(i64::from(position_ms).saturating_add(offset_ms))
-            }
+            MediaCommand::SeekBy(offset_ms) => return self.skip_by(offset_ms),
         });
+    }
+
+    /// Seeks to a position, setting aside any skip still adding up.
+    fn seek_to(&self, position_ms: u32) {
+        self.cancel_skip();
+        self.show_position(position_ms);
+        self.request(Request::Seek(position_ms));
+    }
+
+    /// Moves by an offset. Presses close together add up and go out as one
+    /// seek once they rest, so a burst moves by all of them.
+    fn skip_by(&self, offset_ms: i64) {
+        let Some(ui) = self.ui.upgrade() else { return };
+        let player = ui.global::<Player>();
+        let shown_ms = player.get_position_ms().max(0) as u32;
+        let target_ms = self.skip.borrow_mut().press(shown_ms, offset_ms);
+        let duration_ms = player.get_duration_ms().max(0) as u32;
+        // Past the end, the skip moves on to the next item when it is sent.
+        let shown_ms = if duration_ms > 0 {
+            target_ms.min(duration_ms)
+        } else {
+            target_ms
+        };
+        self.show_position(shown_ms);
+        let app = self.this.clone();
+        self.skip_timer
+            .start(TimerMode::SingleShot, SKIP_DELAY, move || {
+                if let Some(app) = app.upgrade() {
+                    app.send_skip();
+                }
+            });
+    }
+
+    fn send_skip(&self) {
+        let Some(target_ms) = self.skip.borrow_mut().send(Instant::now()) else {
+            return;
+        };
+        let duration_ms = self.ui.upgrade().map_or(0, |ui| {
+            ui.global::<Player>().get_duration_ms().max(0) as u32
+        });
+        // Spotify too moves on rather than seek past the end.
+        if duration_ms > 0 && target_ms >= duration_ms {
+            self.request(Request::Next);
+        } else {
+            self.request(Request::Seek(target_ms));
+        }
+    }
+
+    fn cancel_skip(&self) {
+        self.skip_timer.stop();
+        self.skip.borrow_mut().cancel();
+    }
+
+    /// Shows a position playback reported, unless a skip is on its way and
+    /// the report predates it. Returns the position on screen.
+    fn show_reported(&self, position_ms: u32) -> u32 {
+        if self.skip.borrow_mut().accepts(position_ms, Instant::now()) {
+            self.show_position(position_ms);
+            return position_ms;
+        }
+        self.ui.upgrade().map_or(position_ms, |ui| {
+            ui.global::<Player>().get_position_ms().max(0) as u32
+        })
     }
 
     fn set_shuffle(&self, shuffle: bool) {
@@ -1391,6 +1475,9 @@ impl App {
             state.now_playing = Some(track.clone());
             (previous, state.remote.is_some())
         };
+        if previous != Some(track.id) {
+            self.cancel_skip();
+        }
         self.with_ui(|ui| {
             let player = ui.global::<Player>();
             player.set_available(true);
@@ -1621,8 +1708,7 @@ impl App {
             }
         };
         if let Some(position_ms) = position_ms {
-            self.show_position(position_ms);
-            self.request(Request::Seek(position_ms));
+            self.seek_to(position_ms);
         }
     }
 

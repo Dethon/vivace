@@ -165,7 +165,7 @@ export component PlayerBar inherits Rectangle {
                 icon-size: 20px;
                 enabled: Player.available;
                 clicked => {
-                    Player.seek(max(Player.position-ms - 15000, 0));
+                    Player.skip(-15000);
                 }
             }
 
@@ -223,12 +223,7 @@ export component PlayerBar inherits Rectangle {
                 icon-size: 20px;
                 enabled: Player.available;
                 clicked => {
-                    // Spotify too moves on rather than seek past the end.
-                    if Player.position-ms + 15000 >= Player.duration-ms {
-                        Player.next();
-                    } else {
-                        Player.seek(Player.position-ms + 15000);
-                    }
+                    Player.skip(15000);
                 }
             }
 

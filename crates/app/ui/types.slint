@@ -121,6 +121,8 @@ export global Player {
     callback next();
     callback previous();
     callback seek(int);
+    // Moves by an offset; presses close together add up to one seek.
+    callback skip(int);
     callback set-volume(float);
     callback toggle-shuffle();
     callback cycle-repeat();
