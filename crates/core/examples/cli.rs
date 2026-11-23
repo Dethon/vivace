@@ -10,6 +10,7 @@
 //!   cli loading-test     plays Liked Songs and skips once, checking each start says it is loading before it plays
 //!   cli placeholder-test     has another client's play command start a plain list on this device, as Spotify sends it
 //!   cli remote-pause <device id>     pauses another device
+//!   cli remote-resume <device id>     resumes another device and prints Spotify's answer
 //!   cli remote-volume <device id> <0.0-1.0>     sets another device's volume
 //!   cli transfer <device id>     moves playback to another device
 //!   cli control-test <device id> [seconds]     plays Liked Songs, moves it to a device and pauses and resumes it there twice, `seconds` apart
@@ -20,7 +21,8 @@
 //!   cli progress | reset-progress <episode id>     shows or clears where an episode was left
 //!   cli drop-test [episode id|paused]     plays Liked Songs or an episode, drops the connection as the server does, reconnects as the app does and checks that playback carries on (or, paused, that play starts it again where it stopped)
 //!   cli idle-test [transfer|drop|elsewhere] [list]     plays Liked Songs (or, with `list`, its first tracks as a plain list), pauses, loses playback the way Spotify takes it from a device left paused, and checks that play (or choosing this computer, then play; or, once a dropped connection is back, play) starts it again where it was; `elsewhere [<show id> <episode id>]` first plays and pauses other tracks (or that episode in its show) on a second device, which also loses playback, then drops the connection, and checks play carries on with what that device left
-//!   cli settings-test [paused]     plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
+//!   cli last-device-test     has a second device play, pause and lose playback while it stays online, then sends it what the player's Play sends and checks that it plays
+//!   cli settings-test [paused]   plays Liked Songs, changes the volume level as the settings do (a new session) and checks that playback carries on, or stays paused, where it was
 //!   cli options-test     plays an album silently to check volume levels, gapless playback and autoplay
 //!   cli episode <episode id> [seconds]     plays an episode from where it was left, then records where it got
 //!   cli episode-end <episode id> [next episode id | show <show id>]     plays an episode's last seconds, which marks it played, and goes on to the next (in its podcast, the one that follows in the podcast's context)
@@ -90,6 +92,9 @@ async fn run() -> Fallible<()> {
             _ => None,
         };
         return idle_test(config, mode, list, elsewhere).await;
+    }
+    if args.first() == Some(&"last-device-test") {
+        return last_device_test(config).await;
     }
     if let ["speaker-test", device, rest @ ..] = args.as_slice() {
         return speaker_test(config, device, rest.first().copied()).await;
@@ -329,6 +334,9 @@ async fn run() -> Fallible<()> {
         }
         ["remote-pause", device] => {
             println!("{:?}", api.remote(device, RemoteCommand::Pause).await);
+        }
+        ["remote-resume", device] => {
+            println!("{:?}", api.remote(device, RemoteCommand::Resume).await);
         }
         ["remote-volume", device, volume] => {
             api.remote_volume(device, volume.parse()?).await?;
@@ -1274,6 +1282,98 @@ async fn play_elsewhere(
     engine.lose_playback()?;
     wait_for(&mut events, 3, |_| false).await;
     Ok((item, paused_at))
+}
+
+/// Another device plays and pauses, then really loses playback (a third
+/// device takes it and goes away) while it stays online, leaving none
+/// active. Reports what a resume sent to that device does, then checks that
+/// play on this computer carries on with what it left.
+async fn last_device_test(config: Config) -> Fallible<()> {
+    let named = |name: &str| Config {
+        device_name: format!("{} {name}", config.device_name),
+        ..config.clone()
+    };
+    let there_name = named("last device").device_name;
+    let (here, mut here_events) = Engine::connect(config.clone()).await?;
+    let (there, mut there_events) = Engine::connect(named("last device")).await?;
+    play_liked(&there)?;
+    started(&mut there_events).await?;
+    playing_past(&mut there_events, 4000).await?;
+    pause(&there, &mut there_events).await?;
+    println!("-> the other device paused; a third starts playing");
+
+    let (taker, mut taker_events) = Engine::connect(named("taker")).await?;
+    play_liked(&taker)?;
+    let item = started(&mut taker_events).await?;
+    playing_past(&mut taker_events, 6000).await?;
+    let paused_at = pause(&taker, &mut taker_events).await?;
+    wait_for(&mut there_events, 5, |event| *event == Event::Stopped).await;
+    println!("-> the third device paused {item:?} at {paused_at} ms and goes away");
+    taker.drop_connection();
+    drop((taker, taker_events));
+
+    let mut connect = None;
+    let give_up = Instant::now() + Duration::from_secs(40);
+    let connect = loop {
+        watch_connect(&mut here_events, &mut connect, 2).await;
+        match &connect {
+            Some(state) if !state.devices.iter().any(|device| device.is_active) => {
+                break state.clone();
+            }
+            _ if Instant::now() > give_up => {
+                println!("SKIP: a device still has playback");
+                return Ok(());
+            }
+            _ => {}
+        }
+    };
+    let device = connect
+        .devices
+        .iter()
+        .find(|device| *device.name == *there_name)
+        .ok_or("the other device isn't listed")?
+        .id
+        .clone();
+
+    println!("-> nothing active; resume the last device");
+    let answer = here.api().remote(&device, RemoteCommand::Resume).await;
+    let resumed = wait_for(&mut there_events, 6, |event| {
+        matches!(event, Event::Playback(Playback { playing: true, .. }))
+    })
+    .await;
+    println!(
+        "resume answered {answer:?}; the device {}",
+        if resumed.is_some() {
+            "played"
+        } else {
+            "did nothing"
+        }
+    );
+    if resumed.is_some() {
+        there.pause()?;
+        wait_for(&mut here_events, 3, |_| false).await;
+    }
+
+    println!("-> play on this computer");
+    here.play()?;
+    let played = wait_for(&mut here_events, 20, |event| {
+        matches!(event, Event::Playback(Playback { playing: true, .. }))
+    })
+    .await;
+    let same_item = events_item(&mut here_events, item).await;
+    here.pause()?;
+    match played {
+        Some(Event::Playback(Playback { position_ms, .. }))
+            if near(position_ms, paused_at, 3000) && same_item =>
+        {
+            println!("PASS: {item:?} went on here at {position_ms} ms")
+        }
+        Some(event) => {
+            println!("FAIL: played, but not where it stopped ({event:?}, same item: {same_item})")
+        }
+        None => println!("FAIL: play did nothing"),
+    }
+    Ok(())
 }
 
 async fn settings_test(mut config: Config, paused: bool) -> Fallible<()> {

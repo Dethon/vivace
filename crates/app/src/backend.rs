@@ -28,6 +28,10 @@ const RESUME_PLAYING_WITHIN: Duration = Duration::from_secs(60);
 // How soon after being resumed a speaker that drops out is resumed again:
 // Soloist stops a second after a resume that follows a short pause.
 const RESUME_DROPOUT: Duration = Duration::from_secs(3);
+// How long the player's controls still mean a device that lost playback with
+// none taking over. A speaker can drop out for a moment; after longer the
+// device has stopped and ignores them, and they mean this computer again.
+const LAST_DEVICE_HOLD: Duration = Duration::from_secs(30);
 // Episodes whose progress is looked up at once while finding where the user
 // left off in a podcast; the newest few usually tell.
 const PROGRESS_LOOKUPS: usize = 10;
@@ -841,8 +845,11 @@ struct RemoteControl {
     /// The device that is playing, when it is not this computer.
     playing: Option<Box<str>>,
     /// The other device that played last, kept while no device is active:
-    /// one can drop out for a moment, and the controls still mean it.
+    /// one can drop out for a moment, and for [`LAST_DEVICE_HOLD`] the
+    /// controls still mean it.
     last: Option<Box<str>>,
+    /// When the account last went from that device to none active.
+    gone_at: Option<Instant>,
     /// The other device last resumed from here, and when.
     resumed: Option<(Box<str>, Instant)>,
 }
@@ -850,7 +857,13 @@ struct RemoteControl {
 impl RemoteControl {
     /// The device a transport command goes to; `None` for this computer.
     fn transport_target(&mut self, command: RemoteCommand, now: Instant) -> Option<Box<str>> {
-        let device = self.playing.clone().or_else(|| self.last.clone())?;
+        let held = self
+            .gone_at
+            .is_none_or(|at| now.duration_since(at) < LAST_DEVICE_HOLD);
+        let device = self
+            .playing
+            .clone()
+            .or_else(|| self.last.clone().filter(|_| held))?;
         if command == RemoteCommand::Resume {
             self.resumed = Some((device.clone(), now));
         }
@@ -863,14 +876,19 @@ impl RemoteControl {
         self.playing = connect.remote.as_ref().map(|remote| remote.device.clone());
         if self.playing.is_some() {
             self.last = self.playing.clone();
+            self.gone_at = None;
         } else if connect.devices.iter().any(|device| device.is_active) {
             // This computer plays.
             self.last = None;
-        } else if let Some((device, at)) = self.resumed.take()
-            && now.duration_since(at) < RESUME_DROPOUT
-            && self.last.as_ref() == Some(&device)
-        {
-            return Some(device);
+            self.gone_at = None;
+        } else {
+            self.gone_at.get_or_insert(now);
+            if let Some((device, at)) = self.resumed.take()
+                && now.duration_since(at) < RESUME_DROPOUT
+                && self.last.as_ref() == Some(&device)
+            {
+                return Some(device);
+            }
         }
         None
     }
@@ -1124,6 +1142,44 @@ mod tests {
         );
         remote.follow(&playing_here(), now);
         assert_eq!(remote.transport_target(RemoteCommand::Pause, now), None);
+    }
+
+    #[test]
+    fn controls_come_back_here_once_a_device_has_been_gone_a_while() {
+        let start = Instant::now();
+        let mut remote = RemoteControl::default();
+        remote.follow(&playing_on(SPEAKER), start);
+        remote.follow(&Connect::default(), start);
+        // Further reports of nothing active don't restart the wait.
+        remote.follow(&Connect::default(), start + LAST_DEVICE_HOLD / 2);
+        let just_before = start + LAST_DEVICE_HOLD - Duration::from_millis(1);
+        assert_eq!(
+            remote
+                .transport_target(RemoteCommand::Resume, just_before)
+                .as_deref(),
+            Some(SPEAKER)
+        );
+        assert_eq!(
+            remote.transport_target(RemoteCommand::Resume, start + LAST_DEVICE_HOLD),
+            None
+        );
+    }
+
+    #[test]
+    fn a_device_that_comes_back_is_commanded_again() {
+        let start = Instant::now();
+        let mut remote = RemoteControl::default();
+        remote.follow(&playing_on(SPEAKER), start);
+        remote.follow(&Connect::default(), start);
+        let later = start + LAST_DEVICE_HOLD;
+        remote.follow(&playing_on(SPEAKER), later);
+        remote.follow(&Connect::default(), later);
+        assert_eq!(
+            remote
+                .transport_target(RemoteCommand::Pause, later)
+                .as_deref(),
+            Some(SPEAKER)
+        );
     }
 
     #[test]

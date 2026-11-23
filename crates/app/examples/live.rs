@@ -18,6 +18,10 @@
 //! With `LIVE_LOADING=1` it plays a track, holds up its audio for a few
 //! seconds and reconnects through a settings change, printing each time the
 //! player starts or stops showing it is loading.
+//! With `LIVE_LAST_DEVICE=1` it watches another device that plays and goes
+//! away in its first 15 seconds (start `cli silent listen <uri> 12` alongside),
+//! waits until the controls no longer mean that device and presses Play,
+//! printing what the bar shows after each step.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -55,6 +59,19 @@ const DEVICE_NAME_FIELD: (f32, f32) = (500.0, 670.0);
 const HEIGHT: u32 = 800;
 // How long the sink holds up playback when asked to stall.
 const STALL: Duration = Duration::from_secs(5);
+
+/// Prints which device the player bar controls and what its button offers.
+fn report_bar(ui: &MainWindow) {
+    println!(
+        "   bar: playing on {:?}, button shows {}",
+        ui.global::<Devices>().get_remote_name(),
+        if ui.global::<Player>().get_playing() {
+            "pause"
+        } else {
+            "play"
+        },
+    );
+}
 
 // Makes the sink's next write hang, as audio that has not arrived does.
 static STALL_NEXT_WRITE: AtomicBool = AtomicBool::new(false);
@@ -672,19 +689,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Ok(target) = std::env::var("LIVE_REMOTE") {
-        let report = |ui: &MainWindow| {
-            println!(
-                "   bar: playing on {:?}, button shows {}",
-                ui.global::<Devices>().get_remote_name(),
-                if ui.global::<Player>().get_playing() {
-                    "pause"
-                } else {
-                    "play"
-                },
-            );
-        };
-        let toggle = move |ui: &MainWindow| {
-            report(ui);
+        let toggle = |ui: &MainWindow| {
+            report_bar(ui);
             ui.global::<Player>().invoke_toggle();
         };
         // `LIVE_REMOTE_WAIT` sets the milliseconds between moving and toggling.
@@ -718,7 +724,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "r4-moved",
                 wait,
                 Box::new(move |ui| {
-                    report(ui);
+                    report_bar(ui);
                     let items = ui.global::<Devices>().get_items();
                     match items
                         .iter()
@@ -734,7 +740,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ("r7-paused", wait, Box::new(toggle)),
             ("r8-playing", wait, Box::new(toggle)),
             ("r9-paused", wait, Box::new(toggle)),
-            ("r10-end", 500, Box::new(report)),
+            ("r10-end", 500, Box::new(report_bar)),
+        ];
+    }
+
+    if std::env::var_os("LIVE_LAST_DEVICE").is_some() {
+        steps = vec![
+            ("l1-other-device", 8000, Box::new(|_| {})),
+            ("l2-gone", 10_000, Box::new(report_bar)),
+            ("l3-waited", 32_000, Box::new(report_bar)),
+            (
+                "l4-play",
+                6000,
+                Box::new(|ui| {
+                    report_bar(ui);
+                    ui.global::<Player>().invoke_toggle();
+                }),
+            ),
+            ("l5-end", 500, Box::new(report_bar)),
         ];
     }
 
